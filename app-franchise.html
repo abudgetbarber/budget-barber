@@ -583,7 +583,7 @@ function startAutoSync(){
   if(!url)return; // only start if URL is configured
   autoSyncInterval=setInterval(function(){
     silentSync();
-  }, 2*60*1000); // 5 minutes
+  }, 5*60*1000); // 5 minutes
 }
 
 function showTab(tab){
@@ -796,79 +796,23 @@ function fetchFromSheets(url, onSuccess, onError){
   document.head.appendChild(script);
 }
 // ── AUTO-RESTORE on every page load ──
-// ── ALWAYS SYNC FROM SHEETS ON LOAD ──
-// Every time the app opens, pull fresh data from Google Sheets
-// This ensures all devices always see the same data
-(function syncOnLoad(){
-  var url = BB_SHEET_URL || localStorage.getItem('bb_sheetUrl');
-  if(!url){ return; } // no URL configured yet
-  localStorage.setItem('bb_sheetUrl', url);
-  LS.set('sheetUrl', url);
-  
-  var banner = document.getElementById('restoreBanner');
-  if(banner) banner.style.display = 'flex';
-  
-  var cbName = '_bbLoad' + Date.now();
-  var script = document.createElement('script');
-  var done = false;
-  
-  var timer = setTimeout(function(){
-    if(done) return; done = true;
-    delete window[cbName];
-    if(script.parentNode) document.head.removeChild(script);
-    if(banner) banner.style.display = 'none';
-    // Timeout: use cached local data
-  }, 10000);
-  
-  window[cbName] = function(json){
-    if(done) return; done = true;
-    clearTimeout(timer);
-    delete window[cbName];
-    if(script.parentNode) document.head.removeChild(script);
-    if(banner) banner.style.display = 'none';
-    try{
-      if(!json || !json.ok || !json.data) return;
-      var d = json.data;
-      var changed = false;
-      // Only update if sheets has data (don't wipe local data with empty sheets)
-      if(d.entries    && d.entries.length)    { LS.set('entries',    d.entries);    changed=true; }
-      if(d.staff      && d.staff.length)      { LS.set('staff',      d.staff);      changed=true; }
-      if(d.salons     && d.salons.length)     { LS.set('salons',     d.salons);     changed=true; }
-      if(d.customers  && d.customers.length)  { LS.set('customers',  d.customers);  changed=true; }
-      if(d.cashIn     && d.cashIn.length)     { LS.set('cashIn',     d.cashIn); }
-      if(d.expenses   && d.expenses.length)   { LS.set('expenses',   d.expenses); }
-      if(d.attendance && d.attendance.length) { LS.set('attendance', d.attendance); }
-      if(d.styleCards && d.styleCards.length) { LS.set('styleCards', d.styleCards); }
-      if(d.visits     && d.visits.length)     { LS.set('visits',     d.visits); }
-      if(d.advances   && d.advances.length)   { LS.set('advances',   d.advances); }
-      if(d.mgrCashIn  && d.mgrCashIn.length)  { LS.set('mgrCashIn',  d.mgrCashIn); }
-      if(d.mgrExpenses&& d.mgrExpenses.length){ LS.set('mgrExpenses',d.mgrExpenses); }
-      if(d.deductions && d.deductions.length){
-        var dg={};
-        d.deductions.forEach(function(r){
-          var k='ded_'+r.staffId+'_'+r.month;
-          if(!dg[k])dg[k]=[];
-          dg[k].push({desc:r.desc,amount:r.amount});
-        });
-        Object.keys(dg).forEach(function(k){LS.set(k,dg[k]);});
-      }
-      if(d.attOverrides&&d.attOverrides.length){
-        d.attOverrides.forEach(function(r){
-          LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});
-        });
-      }
-      if(changed) location.reload(); // reload with fresh data
-    }catch(e){ console.warn('Load sync error:', e); }
-  };
-  
-  script.onerror = function(){
-    if(done) return; done = true;
-    clearTimeout(timer);
-    if(banner) banner.style.display = 'none';
-  };
-  
-  script.src = url + '?action=read&callback=' + cbName + '&t=' + Date.now();
-  document.head.appendChild(script);
+(function autoRestore(){
+  var url=BB_SHEET_URL||LS.get('sheetUrl')||localStorage.getItem('bb_sheetUrl');
+  if(!url)return;
+  LS.set('sheetUrl',url);
+  localStorage.setItem('bb_sheetUrl',url);
+  var hasData=(LS.get('staff')||[]).length>0;
+  if(hasData)return;
+  var banner=document.getElementById('restoreBanner');
+  if(banner)banner.style.display='flex';
+  fetchFromSheets(url,function(d){
+    applySheetData(d);
+    if(banner)banner.style.display='none';
+    setTimeout(function(){location.reload();},300);
+  },function(err){
+    console.warn('Auto-restore failed:',err);
+    if(banner)banner.style.display='none';
+  },15000);
 })();
 
 
@@ -956,7 +900,7 @@ function startAutoSync(){
   if(autoSyncInterval)clearInterval(autoSyncInterval);
   var url=LS.get('sheetUrl')||BB_SHEET_URL;
   if(!url)return;
-  autoSyncInterval=setInterval(function(){silentSync();},2*60*1000);
+  autoSyncInterval=setInterval(function(){silentSync();},5*60*1000);
 }
 function silentSync(){
   var url=LS.get('sheetUrl')||BB_SHEET_URL;
@@ -1397,8 +1341,7 @@ function saveStaffEdit(){
 function deleteStaff(id){
   if(!confirm('Remove this staff member?'))return;
   var staff=LS.get('staff')||[];
-  LS.set('staff',staff.filter(function(u){return u.id!==id;
-  var _u=LS.get('sheetUrl')||BB_SHEET_URL;if(_u)syncSheet(_u,'Staff',LS.get('staff')||[],function(){});}));
+  LS.set('staff',staff.filter(function(u){return u.id!==id;}));
   toast('Staff member removed');
   renderStaff();
 }
