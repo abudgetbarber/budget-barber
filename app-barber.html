@@ -312,6 +312,7 @@ body{font-family:var(--BF);background:var(--bg);color:var(--white);font-size:15p
   <div style="font-size:11px;color:var(--muted2);margin-top:8px">Ask your Admin for the Google Sheets URL</div>
 </div>
 
+
 <div id="app-content">
 <div class="topbar">
   <div class="logo"><span>BB</span></div>
@@ -678,333 +679,124 @@ body{font-family:var(--BF);background:var(--bg);color:var(--white);font-size:15p
 <div class="toast-el" id="toastEl"></div>
 
 <script>
-// ════════════════════════════════════════════════════
-// BUDGET BARBER — UNIVERSAL SYNC MODULE
-// Google Sheets is the single source of truth.
-// Every page load pulls latest data from Sheets.
-// Every save/billing event pushes to Sheets immediately.
-// ════════════════════════════════════════════════════
+var BB_SHEET_URL='https://script.google.com/macros/s/AKfycbwaTYPcStdiRKSNVT-tQCwyUWpeeQyRLgBkMceWxq_U20ATRw-bu6BKCWwqVCuK6E05/exec';
+// ── AUTH ──
+var SESSION_PHONE = sessionStorage.getItem('bb_phone');
+var SESSION_ROLE  = sessionStorage.getItem('bb_role');
+if (!SESSION_PHONE || SESSION_ROLE !== 'barber') { window.location.href = 'login-barber.html'; }
 
-var BB_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwaTYPcStdiRKSNVT-tQCwyUWpeeQyRLgBkMceWxq_U20ATRw-bu6BKCWwqVCuK6E05/exec';
+// ── STORAGE ──
+var LS = {
+  get: function(k){ try{ return JSON.parse(localStorage.getItem('bb_'+k)); } catch(e){ return null; } },
+  set: function(k,v){ try{ localStorage.setItem('bb_'+k,JSON.stringify(v)); return true; } catch(e){ return false; } }
+};
 
-// ── Ensure URL is always saved to localStorage ──
-(function(){
-  var u = localStorage.getItem('bb_sheetUrl');
-  if(!u && BB_SHEET_URL) localStorage.setItem('bb_sheetUrl', BB_SHEET_URL);
-})();
+// ── Fix 11: Updated Services List ──
+var SERVICES_LIST = [
+  {code:'H',  label:'Haircut'},
+  {code:'S',  label:'Shave'},
+  {code:'T',  label:'Trim'},
+  {code:'CB', label:'Combo'},
+  {code:'HM', label:'Head Massage'},
+  {code:'F',  label:'Facial'},
+  {code:'C',  label:'Colour'},
+  {code:'B',  label:'Beard'},
+  {code:'D',  label:'Detan'},
+  {code:'HSpa',label:'Hair Spa'},
+  {code:'FS', label:'Face Scrub'},
+  {code:'HS', label:'Hair Styling'}
+];
+var selectedSvcs = [];
 
-// ── Apply all restored data to localStorage ──
-function applyRestoredData(d){
-  if(!d) return;
-  if(d.entries    &&d.entries.length)    LS.set('entries',    d.entries);
-  if(d.staff      &&d.staff.length)      LS.set('staff',      d.staff);
-  if(d.salons     &&d.salons.length)     LS.set('salons',     d.salons);
-  if(d.customers  &&d.customers.length)  LS.set('customers',  d.customers);
-  if(d.cashIn     &&d.cashIn.length)     LS.set('cashIn',     d.cashIn);
-  if(d.expenses   &&d.expenses.length)   LS.set('expenses',   d.expenses);
-  if(d.attendance &&d.attendance.length) LS.set('attendance', d.attendance);
-  if(d.styleCards &&d.styleCards.length) LS.set('styleCards', d.styleCards);
-  if(d.visits     &&d.visits.length)     LS.set('visits',     d.visits);
-  if(d.advances   &&d.advances.length)   LS.set('advances',   d.advances);
-  if(d.mgrCashIn  &&d.mgrCashIn.length)  LS.set('mgrCashIn',  d.mgrCashIn);
-  if(d.mgrExpenses&&d.mgrExpenses.length) LS.set('mgrExpenses',d.mgrExpenses);
-  if(d.deductions &&d.deductions.length){
-    var dg={};
-    d.deductions.forEach(function(r){
-      var k='ded_'+r.staffId+'_'+r.month;
-      if(!dg[k])dg[k]=[];
-      dg[k].push({desc:r.desc,amount:r.amount});
-    });
-    Object.keys(dg).forEach(function(k){LS.set(k,dg[k]);});
-  }
-  if(d.attOverrides&&d.attOverrides.length){
-    d.attOverrides.forEach(function(r){
-      LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});
-    });
-  }
+// Ensure Sheet URL is always configured
+(function(){var U='https://script.google.com/macros/s/AKfycbwaTYPcStdiRKSNVT-tQCwyUWpeeQyRLgBkMceWxq_U20ATRw-bu6BKCWwqVCuK6E05/exec';if(!localStorage.getItem('bb_sheetUrl')&&U)localStorage.setItem('bb_sheetUrl',U);if(!LS.get('sheetUrl')&&U)LS.set('sheetUrl',U);})();
+// ── HELPERS ──
+function today()    { return new Date().toLocaleDateString('en-IN'); }
+function todayISO() { return new Date().toISOString().split('T')[0]; }
+function fmtINR(n)  { return '₹'+Number(n||0).toLocaleString('en-IN'); }
+function getEntries()  { return LS.get('entries')  || []; }
+function setEntries(a) { LS.set('entries', a); var _u=LS.get('sheetUrl')||BB_SHEET_URL;if(_u)syncSheet(_u,'Entries',a,function(){}); }
+
+function filterByDate(entries, ds) {
+  if (!ds) return entries;
+  var p = ds.split('-'); var local = parseInt(p[2])+'/'+parseInt(p[1])+'/'+p[0];
+  return entries.filter(function(e){ return e.date===local; });
 }
-
-// ── JSONP call — works on all devices, no CORS issues ──
-function jsonpCall(url, callback){
-  var cbName='_bb'+Date.now()+Math.floor(Math.random()*9999);
-  var script=document.createElement('script');
-  var done=false;
-  var timer=setTimeout(function(){
-    if(done)return; done=true;
-    delete window[cbName];
-    if(script.parentNode)document.head.removeChild(script);
-    callback(null,'timeout');
-  },20000);
-  window[cbName]=function(res){
-    if(done)return; done=true;
-    clearTimeout(timer);
-    delete window[cbName];
-    if(script.parentNode)document.head.removeChild(script);
-    callback(res,null);
-  };
-  script.onerror=function(){
-    if(done)return; done=true;
-    clearTimeout(timer);
-    delete window[cbName];
-    callback(null,'network error');
-  };
-  script.src=url+(url.indexOf('?')>-1?'&':'?')+'cb='+cbName;
-  document.head.appendChild(script);
-}
-
-// ── Fetch all data from Sheets ──
-function fetchFromSheets(url, onSuccess, onError){
-  jsonpCall(url+'?action=read', function(json,err){
-    if(err){ if(onError)onError(err); return; }
-    if(!json||!json.ok||!json.data){ if(onError)onError('no data'); return; }
-    onSuccess(json.data);
+function filterByMonth(entries, mo) {
+  if (!mo) return entries;
+  var p = mo.split('-');
+  return entries.filter(function(e){
+    var d=(e.date||'').split('/');
+    return parseInt(d[1])===parseInt(p[1]) && parseInt(d[2])===parseInt(p[0]);
   });
 }
-
-// ── Send one chunk via JSONP GET (short params for mobile URL safety) ──
-function sendChunkJSONP(url, sheetName, rows, replace, onDone){
-  var minRows=rows.map(function(r){
-    var out={};
-    Object.keys(r).forEach(function(k){if(r[k]!==''&&r[k]!==null&&r[k]!==undefined)out[k]=r[k];});
-    return out;
-  });
-  var encoded=encodeURIComponent(JSON.stringify(minRows));
-  var callUrl=url+'?action=w&s='+encodeURIComponent(sheetName)+'&d='+encoded+'&r='+(replace?1:0);
-  if(callUrl.length>1800&&minRows.length>1){
-    // URL too long — send one row at a time
-    var i=0;
-    function sendOne(){
-      if(i>=minRows.length){onDone(true);return;}
-      var se=encodeURIComponent(JSON.stringify([minRows[i]]));
-      var su=url+'?action=w&s='+encodeURIComponent(sheetName)+'&d='+se+'&r='+(i===0&&replace?1:0);
-      i++;
-      jsonpCall(su,function(res,err){
-        if(err)console.warn('row err:',err);
-        setTimeout(sendOne,200);
-      });
-    }
-    sendOne(); return;
-  }
-  jsonpCall(callUrl,function(res,err){
-    if(err)console.warn('chunk err:',err);
-    onDone(!err);
-  });
+function isoToLocal(ds) {
+  if (!ds) return '';
+  var p=ds.split('-'); return parseInt(p[2])+'/'+parseInt(p[1])+'/'+p[0];
+}
+function localToISO(ds) {
+  if (!ds) return '';
+  var p=ds.split('/');
+  return p[2]+'-'+(p[1].length<2?'0':'')+p[1]+'-'+(p[0].length<2?'0':'')+p[0];
+}
+function svcIcon(services) {
+  if (!services) return '✂️';
+  var s = services.toLowerCase();
+  if (s.includes('colour') || s.includes('color')) return '🎨';
+  if (s.includes('facial') || s.includes('scrub')) return '💆';
+  if (s.includes('spa') || s.includes('massage')) return '🧖';
+  if (s.includes('beard')) return '🧔';
+  if (s.includes('combo')) return '✂️💈';
+  return '✂️';
 }
 
-// ── Sync one full sheet (chunked) ──
-function syncSheet(url, sheetName, rows, onDone){
-  if(!rows||!rows.length){onDone(true);return;}
-  var CHUNK=3;
-  var chunks=[];
-  for(var i=0;i<rows.length;i+=CHUNK)chunks.push(rows.slice(i,i+CHUNK));
-  var ci=0;
-  function next(){
-    if(ci>=chunks.length){onDone(true);return;}
-    sendChunkJSONP(url,sheetName,chunks[ci],ci===0,function(ok){ci++;setTimeout(next,250);});
-  }
-  next();
+// ── SEED ──
+function seedDemo() {
+  if (LS.get('seeded')) return;
+  // Seed only a default salon so the app has structure
+  // Real staff and data will come from Admin setup or Google Sheets restore
+  var salons=[{id:'s1',name:'Budget Barber',location:'Main Branch',mgrPhone:''}];
+  LS.set('salons',salons);
+  LS.set('staff',[]);LS.set('entries',[]);LS.set('customers',[]);
+  LS.set('styleCards',[]);
+    var _u=LS.get('sheetUrl')||BB_SHEET_URL;if(_u){syncSheet(_u,'StyleCards',(LS.get('styleCards')||[]).map(function(c){return{id:c.id,cardId:c.cardId,customerId:c.customerId,barberId:c.barberId,salonId:c.salonId,name:c.name,createdAt:c.createdAt,topLength:c.topLength,texture:c.texture,fade:c.fade,guard:c.guard,neckline:c.neckline,beard:c.beard,product:c.product,notes:c.notes,zoneFront:c.zones?c.zones.front:'',zoneTop:c.zones?c.zones.top:'',zoneCrown:c.zones?c.zones.crown:'',zoneLeft:c.zones?c.zones.left:'',zoneRight:c.zones?c.zones.right:'',zoneBack:c.zones?c.zones.back:''};}).slice(-1),function(){});syncSheet(_u,'Customers',LS.get('customers')||[],function(){});syncSheet(_u,'Visits',LS.get('visits')||[],function(){});}LS.set('visits',[]);LS.set('cashIn',[]);
+  LS.set('expenses',[]);LS.set('attendance',[]);
+  LS.set('sheetUrl','');LS.set('sheetName','Sheet1');LS.set('seeded',true);
 }
+seedDemo();
 
-// ── Build full data payload from localStorage ──
-function buildSheetsPayload(){
-  return {
-    Entries:    LS.get('entries')   ||[],
-    Staff:      LS.get('staff')     ||[],
-    Salons:     LS.get('salons')    ||[],
-    Customers:  LS.get('customers') ||[],
-    CashIn:     LS.get('cashIn')    ||[],
-    Expenses:   LS.get('expenses')  ||[],
-    Attendance: LS.get('attendance')||[],
-    StyleCards: (LS.get('styleCards')||[]).map(function(c){
-      return{id:c.id,cardId:c.cardId,customerId:c.customerId,barberId:c.barberId,
-        salonId:c.salonId,name:c.name,createdAt:c.createdAt,topLength:c.topLength,
-        texture:c.texture,fade:c.fade,guard:c.guard,neckline:c.neckline,
-        beard:c.beard,product:c.product,notes:c.notes,
-        zoneFront:c.zones?c.zones.front:'',zoneTop:c.zones?c.zones.top:'',
-        zoneCrown:c.zones?c.zones.crown:'',zoneLeft:c.zones?c.zones.left:'',
-        zoneRight:c.zones?c.zones.right:'',zoneBack:c.zones?c.zones.back:''};
-    }),
-    Visits:      LS.get('visits')    ||[],
-    Advances:    LS.get('advances')  ||[],
-    MgrCashIn:   LS.get('mgrCashIn') ||[],
-    MgrExpenses: LS.get('mgrExpenses')||[],
-    Deductions:(function(){
-      var r=[];try{Object.keys(localStorage).forEach(function(k){
-        if(k.startsWith('bb_ded_')){
-          var p=k.replace('bb_ded_','').split('_'),sid=p[0],mo=p.slice(1).join('_');
-          (JSON.parse(localStorage.getItem(k))||[]).forEach(function(d){r.push({staffId:sid,month:mo,desc:d.desc,amount:d.amount});});
-        }
-      });}catch(e){}return r;
-    })(),
-    AttOverrides:(function(){
-      var r=[];try{Object.keys(localStorage).forEach(function(k){
-        if(k.startsWith('bb_att_')){
-          var p=k.replace('bb_att_','').split('_'),sid=p[0],mo=p.slice(1).join('_');
-          var v=JSON.parse(localStorage.getItem(k))||{};
-          r.push({staffId:sid,month:mo,present:v.present||0,half:v.half||0,absent:v.absent||0});
-        }
-      });}catch(e){}return r;
-    })()
-  };
-}
-
-// ── Show sync status in settings panel ──
-function showSyncStatus(msg,type){
-  var el=document.getElementById('sync-status');
-  if(!el)return;
-  el.style.display='block';
-  el.style.background=type==='ok'?'rgba(0,196,140,.15)':type==='err'?'rgba(255,107,91,.15)':'rgba(91,196,240,.1)';
-  el.style.color=type==='ok'?'var(--accent)':type==='err'?'var(--danger)':'var(--blue)';
-  el.textContent=msg;
-  if(type!=='loading')setTimeout(function(){el.style.display='none';},5000);
-}
-
-// ── Save config ──
-function saveSheetConfig(){
-  var u=document.getElementById('sh-url').value.trim();
-  var n=document.getElementById('sh-name').value.trim()||'Sheet1';
-  var finalUrl=u||BB_SHEET_URL;
-  LS.set('sheetUrl',finalUrl);
-  LS.set('sheetName',n);
-  localStorage.setItem('bb_sheetUrl',finalUrl);
-  toast('✓ Config saved');
-  startAutoSync();
-}
-
-// ── Manual full sync ──
-function syncAllData(){
-  var url=LS.get('sheetUrl')||BB_SHEET_URL;
-  if(!url){toast('⚠ No Apps Script URL configured');return;}
-  showSyncStatus('⬆ Syncing to Google Sheets…','loading');
-  var payload=buildSheetsPayload();
-  var names=Object.keys(payload),done=0,errors=0;
-  function next(){
-    if(done>=names.length){
-      if(errors===0){
-        showSyncStatus('✅ All data synced to Google Sheets!','ok');
-        toast('✅ Synced');
-        var el=document.getElementById('lastSyncTime');
-        if(el)el.textContent='Synced '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
-      }else{
-        showSyncStatus('⚠ Some sheets may have failed — try again','err');
-        toast('⚠ Partial sync');
-      }
-      return;
-    }
-    var name=names[done],rows=payload[name];done++;
-    if(!rows||!rows.length){next();return;}
-    showSyncStatus('⬆ Syncing '+name+'… ('+done+'/'+names.length+')','loading');
-    syncSheet(url,name,rows,function(ok){if(!ok)errors++;next();});
-  }
-  next();
-}
-
-// ── Manual restore from Sheets ──
-function restoreFromSheets(){
-  var url=LS.get('sheetUrl')||BB_SHEET_URL;
-  if(!url){toast('⚠ No Apps Script URL');return;}
-  if(!confirm('Replace ALL local data with data from Google Sheets?'))return;
-  showSyncStatus('⬇ Loading from Google Sheets…','loading');
-  fetchFromSheets(url,function(d){
-    applyRestoredData(d);
-    showSyncStatus('✅ Data restored from Google Sheets!','ok');
-    toast('✅ Restored — reloading…');
-    setTimeout(function(){location.reload();},1500);
-  },function(err){
-    showSyncStatus('❌ Restore failed: '+err,'err');
-    toast('❌ Restore failed — '+err);
-  });
-}
-
-// ── Auto-sync every 2 minutes (silent) ──
-var autoSyncInterval=null;
-function startAutoSync(){
-  if(autoSyncInterval)clearInterval(autoSyncInterval);
+// ── AUTO-RESTORE on first load ──
+// If this device has no staff data but has a Sheet URL, pull from Sheets automatically
+// ── AUTO-LOAD DATA ON FIRST OPEN ──
+// Runs every time the app loads. If staff data is missing or stale,
+// silently pulls latest from Google Sheets — no manual action needed.
+(function autoLoad(){
   var url=LS.get('sheetUrl')||BB_SHEET_URL;
   if(!url)return;
-  autoSyncInterval=setInterval(function(){silentSync();},2*60*1000);
-}
-function silentSync(){
-  var url=LS.get('sheetUrl')||BB_SHEET_URL;
-  if(!url)return;
-  var core={
-    Entries:    LS.get('entries')   ||[],
-    Staff:      LS.get('staff')     ||[],
-    Salons:     LS.get('salons')    ||[],
-    Customers:  LS.get('customers') ||[],
-    CashIn:     LS.get('cashIn')    ||[],
-    Expenses:   LS.get('expenses')  ||[],
-    Attendance: LS.get('attendance')||[]
-  };
-  var names=Object.keys(core),i=0;
-  function nxt(){
-    if(i>=names.length){
-      var el=document.getElementById('lastSyncTime');
-      if(el)el.textContent='Synced '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
-      return;
-    }
-    var name=names[i],rows=core[name];i++;
-    if(!rows||!rows.length){nxt();return;}
-    syncSheet(url,name,rows,function(){nxt();});
-  }
-  nxt();
-}
 
-// ── ON PAGE LOAD: pull latest data from Sheets ──
-// This is the key to cross-device consistency.
-// Every time any app page loads, it pulls the latest data from Sheets.
-(function syncOnLoad(){
-  var url=LS.get('sheetUrl')||BB_SHEET_URL;
-  if(!url)return;
-  if(!localStorage.getItem('bb_sheetUrl'))
-    localStorage.setItem('bb_sheetUrl',url);
-
+  // Always check Sheets on load — show banner briefly while loading
   var staff=LS.get('staff')||[];
   var banner=document.getElementById('restoreBanner');
 
+  // If no data at all — must load from Sheets before proceeding
   if(!staff.length){
-    // No data at all — show loading banner and wait for data before continuing
     if(banner)banner.style.display='flex';
-    fetchFromSheets(url,function(d){
-      applyRestoredData(d);
-      if(banner)banner.style.display='none';
-      location.reload();
-    },function(err){
-      if(banner)banner.style.display='none';
-      console.warn('Initial load failed:',err);
-    });
-    return;
+    fetchFromSheets(url,
+      function(data){
+        applyRestoredData(data);
+        if(banner)banner.style.display='none';
+        // Reload so the app initialises with the fresh data
+        location.reload();
+      },
+      function(err){
+        if(banner)banner.style.display='none';
+        console.warn('Auto-load failed:',err);
+        // Let the app continue — user can restore manually
+      }
+    );
   }
-
-  // Has local data — still fetch silently to stay in sync
-  fetchFromSheets(url,function(d){
-    if(!d)return;
-    var changed=false;
-    // Only update if Sheets has more rows (newer data) or we have no data
-    if(d.staff      &&d.staff.length>=(LS.get('staff')||[]).length)      {LS.set('staff',d.staff);changed=true;}
-    if(d.salons     &&d.salons.length>=(LS.get('salons')||[]).length)     {LS.set('salons',d.salons);changed=true;}
-    if(d.entries    &&d.entries.length>=(LS.get('entries')||[]).length)   {LS.set('entries',d.entries);changed=true;}
-    if(d.customers  &&d.customers.length>=(LS.get('customers')||[]).length){LS.set('customers',d.customers);changed=true;}
-    if(d.cashIn     &&d.cashIn.length)     LS.set('cashIn',d.cashIn);
-    if(d.expenses   &&d.expenses.length)   LS.set('expenses',d.expenses);
-    if(d.attendance &&d.attendance.length) LS.set('attendance',d.attendance);
-    if(d.styleCards &&d.styleCards.length) LS.set('styleCards',d.styleCards);
-    if(d.visits     &&d.visits.length)     LS.set('visits',d.visits);
-    if(d.advances   &&d.advances.length)   LS.set('advances',d.advances);
-    if(d.mgrCashIn  &&d.mgrCashIn.length)  LS.set('mgrCashIn',d.mgrCashIn);
-    if(d.mgrExpenses&&d.mgrExpenses.length) LS.set('mgrExpenses',d.mgrExpenses);
-    if(d.deductions&&d.deductions.length){
-      var dg={};
-      d.deductions.forEach(function(r){var k='ded_'+r.staffId+'_'+r.month;if(!dg[k])dg[k]=[];dg[k].push({desc:r.desc,amount:r.amount});});
-      Object.keys(dg).forEach(function(k){LS.set(k,dg[k]);});
-    }
-    if(d.attOverrides&&d.attOverrides.length){
-      d.attOverrides.forEach(function(r){LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});});
-    }
-    if(changed)location.reload();
-  },function(err){console.warn('Background sync failed:',err);});
-  startAutoSync();
 })();
+
 
 // ── INIT ──
 var ME = null;
@@ -1465,7 +1257,7 @@ function saveNote(){
   var card=cards.find(function(c){return c.id===pendingNoteCardId;});
   if(card){
     var visits=LS.get('visits')||[];
-    var _sn1=(LS.get('salons')||[]).find(function(s){return s.id===ME.salonId;});visits.push({id:Date.now(),customerId:card.customerId,barberId:ME.id,barberName:ME.name,salonId:ME.salonId,salonName:_sn1?_sn1.name:'Budget Barber',styleName:card.name,date:today(),note:note});
+    visits.push({id:Date.now(),customerId:card.customerId,barberId:ME.id,barberName:ME.name,salonId:ME.salonId,salonName:'Budget Barber',styleName:card.name,date:today(),note:note});
     LS.set('visits',visits);
   var _u=LS.get('sheetUrl')||BB_SHEET_URL;if(_u)syncSheet(_u,'Visits',LS.get('visits')||[],function(){});
   }
@@ -1533,7 +1325,7 @@ function saveCard(){
     cards.push(newCard);
     if(!LS.set('styleCards',cards)){newCard.photos={front:null,side:null,back:null};cards[cards.length-1]=newCard;if(!LS.set('styleCards',cards)){cards.pop();btn.disabled=false;btn.textContent='✓ Save Style Card';toast('❌ Storage full');return;}}
     var visits=LS.get('visits')||[];
-    var _sn2=(LS.get('salons')||[]).find(function(s){return s.id===ME.salonId;});visits.push({id:ts+1,customerId:custId,barberId:ME.id,barberName:ME.name,salonId:ME.salonId,salonName:_sn2?_sn2.name:'Budget Barber',styleName:name,date:today(),note:''});
+    visits.push({id:ts+1,customerId:custId,barberId:ME.id,barberName:ME.name,salonId:ME.salonId,salonName:'Budget Barber',styleName:name,date:today(),note:''});
     LS.set('visits',visits);
     // reset
     document.getElementById('csPhone').value='';document.getElementById('csCustName').value='';
@@ -1786,6 +1578,8 @@ function renderSalary(){
 // ── GOOGLE SHEETS SYNC ──
 // Uses JSONP (script tag) for ALL operations — works on every device
 // This is the only cross-origin method that works on mobile Safari, Android Chrome, and desktop
+
+var BB_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwaTYPcStdiRKSNVT-tQCwyUWpeeQyRLgBkMceWxq_U20ATRw-bu6BKCWwqVCuK6E05/exec';
 
 function saveSheetConfig(){
   var u = document.getElementById('sh-url').value.trim();
