@@ -1718,21 +1718,70 @@ async function restoreFromSheets(){
   if(!url){toast('⚠ No Apps Script URL');return;}
   if(!confirm('Replace ALL local data with data from Google Sheets?'))return;
   showSyncStatus('⬇ Loading from Google Sheets…','loading');
-  var cbName='_bbR'+Date.now(),script=document.createElement('script'),done=false;
+  try{
+    // Use fetch with cors — works on all devices when Apps Script is deployed as "Anyone"
+    var resp=await fetch(url+'?action=read',{
+      method:'GET',
+      mode:'cors',
+      cache:'no-cache'
+    });
+    if(!resp.ok)throw new Error('HTTP '+resp.status);
+    var json=await resp.json();
+    if(!json||!json.ok||!json.data)throw new Error(json&&json.error?json.error:'No data returned');
+    var d=json.data;
+    if(d.entries    &&d.entries.length)    LS.set('entries',d.entries);
+    if(d.staff      &&d.staff.length)      LS.set('staff',d.staff);
+    if(d.salons     &&d.salons.length)     LS.set('salons',d.salons);
+    if(d.customers  &&d.customers.length)  LS.set('customers',d.customers);
+    if(d.cashIn     &&d.cashIn.length)     LS.set('cashIn',d.cashIn);
+    if(d.expenses   &&d.expenses.length)   LS.set('expenses',d.expenses);
+    if(d.attendance &&d.attendance.length) LS.set('attendance',d.attendance);
+    if(d.styleCards &&d.styleCards.length) LS.set('styleCards',d.styleCards);
+    if(d.visits     &&d.visits.length)     LS.set('visits',d.visits);
+    if(d.advances   &&d.advances.length)   LS.set('advances',d.advances);
+    if(d.mgrCashIn  &&d.mgrCashIn.length)  LS.set('mgrCashIn',d.mgrCashIn);
+    if(d.mgrExpenses&&d.mgrExpenses.length) LS.set('mgrExpenses',d.mgrExpenses);
+    if(d.deductions&&d.deductions.length){
+      var dg={};
+      d.deductions.forEach(function(r){
+        var k='ded_'+r.staffId+'_'+r.month;
+        if(!dg[k])dg[k]=[];
+        dg[k].push({desc:r.desc,amount:r.amount});
+      });
+      Object.keys(dg).forEach(function(k){LS.set(k,dg[k]);});
+    }
+    if(d.attOverrides&&d.attOverrides.length){
+      d.attOverrides.forEach(function(r){
+        LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});
+      });
+    }
+    showSyncStatus('✅ Data restored!','ok');
+    toast('✅ Restored — reloading…');
+    setTimeout(function(){location.reload();},1500);
+  }catch(e){
+    // Fallback: try JSONP if cors fails
+    showSyncStatus('⬇ Retrying with alternate method…','loading');
+    restoreViaJSONP(url);
+  }
+}
+
+function restoreViaJSONP(url){
+  var cbName='_bbR'+Date.now(),done=false;
+  var script=document.createElement('script');
   var timer=setTimeout(function(){
     if(done)return;done=true;
     delete window[cbName];
     if(script.parentNode)document.head.removeChild(script);
-    showSyncStatus('❌ Timed out — check URL/internet','err');
-    toast('❌ Restore timed out');
-  },25000);
+    showSyncStatus('❌ Restore failed — check internet connection','err');
+    toast('❌ Restore failed');
+  },20000);
   window[cbName]=function(json){
     if(done)return;done=true;
     clearTimeout(timer);
     delete window[cbName];
     if(script.parentNode)document.head.removeChild(script);
     try{
-      if(!json||!json.ok||!json.data)throw new Error(json&&json.error?json.error:'No data');
+      if(!json||!json.ok||!json.data)throw new Error('No data');
       var d=json.data;
       if(d.entries    &&d.entries.length)    LS.set('entries',d.entries);
       if(d.staff      &&d.staff.length)      LS.set('staff',d.staff);
@@ -1757,14 +1806,14 @@ async function restoreFromSheets(){
       showSyncStatus('✅ Data restored!','ok');
       toast('✅ Restored — reloading…');
       setTimeout(function(){location.reload();},1500);
-    }catch(e){
-      showSyncStatus('❌ Restore failed: '+e.message,'err');
+    }catch(e2){
+      showSyncStatus('❌ Restore failed: '+e2.message,'err');
       toast('❌ Restore failed');
     }
   };
   script.onerror=function(){
     if(done)return;done=true;clearTimeout(timer);
-    showSyncStatus('❌ Could not reach Sheets — check internet','err');
+    showSyncStatus('❌ Could not reach Google Sheets','err');
     toast('❌ Network error');
   };
   script.src=url+'?action=read&callback='+cbName;

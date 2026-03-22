@@ -274,14 +274,9 @@ pre{font-size:11px;color:#90EE90;line-height:1.6;white-space:pre-wrap;word-break
     </div>
     <details>
       <summary style="color:var(--muted);font-size:12px;cursor:pointer">📋 View Apps Script code to paste</summary>
-      <pre id="gs-code" style="margin-top:10px">// ── BUDGET BARBER SYNC SCRIPT v7 ──
-// Handles POST with JSON body (from mobile) + JSONP GET (for restore)
-//
-// SETUP:
-// 1. Google Sheets → Extensions → Apps Script
-// 2. Delete ALL existing code → paste this → Save (Ctrl+S)
-// 3. Deploy → New deployment → Web app → Anyone → Deploy → Authorize
-// 4. Copy Web App URL → paste in each app Settings → Save Config
+      <pre id="gs-code" style="margin-top:10px">// ── BUDGET BARBER SYNC SCRIPT v8 ──
+// POST (JSON body) for writes + GET (fetch/JSONP) for reads
+// Deploy as Web App → Anyone (no Google sign-in required)
 
 const SS = SpreadsheetApp.getActiveSpreadsheet();
 
@@ -305,14 +300,13 @@ const HEADERS = {
   AttOverrides: ['staffId','month','present','half','absent']
 };
 
-// ── POST: receives JSON body from apps (fetch no-cors) ──
 function doPost(e) {
   try {
-    var body = JSON.parse(e.postData.contents);
+    var body      = JSON.parse(e.postData.contents);
     var action    = body.action    || '';
     var sheetName = body.sheet     || '';
     var rows      = body.data      || [];
-    var replace   = body.replace;  // 1=replace, 0=append
+    var replace   = body.replace;
 
     if (action === 'syncSheet' && sheetName && HEADERS[sheetName]) {
       if (replace === 1 || replace === '1' || replace === true) {
@@ -320,87 +314,85 @@ function doPost(e) {
       } else {
         appendRows(sheetName, rows);
       }
-      return jsonOut({ ok: true, message: 'Synced ' + sheetName + ' (' + rows.length + ')' }, '');
+      return out({ ok: true, message: 'Synced ' + sheetName + ' (' + rows.length + ')' }, '');
     }
-    return jsonOut({ ok: true, message: 'OK' }, '');
+    return out({ ok: true, message: 'OK' }, '');
   } catch(err) {
-    return jsonOut({ ok: false, error: err.message }, '');
+    return out({ ok: false, error: err.message }, '');
   }
 }
 
-// ── GET: read all data (for Restore via JSONP) ──
 function doGet(e) {
-  var p = e.parameter || {};
-  var callback = p.callback || '';
-  var action   = p.action   || 'read';
+  var p        = e.parameter || {};
+  var callback = p.callback  || '';
+  var action   = p.action    || 'read';
 
   if (action === 'syncSheet') {
-    // Fallback GET-based sync (for compatibility)
     try {
       var sheetName = p.sheet || '';
-      var rows = JSON.parse(decodeURIComponent(p.data || '[]'));
-      var replace = p.replace;
+      var rows      = JSON.parse(decodeURIComponent(p.data || '[]'));
+      var replace   = p.replace;
       if (replace === '1' || replace === 1) writeSheet(sheetName, rows);
       else appendRows(sheetName, rows);
-      return jsonOut({ ok: true }, callback);
-    } catch(err) { return jsonOut({ ok: false, error: err.message }, callback); }
+      return out({ ok: true }, callback);
+    } catch(err) {
+      return out({ ok: false, error: err.message }, callback);
+    }
   }
 
-  // Default: read all sheets
+  // Default: read all sheets (called by Restore)
   try {
     var result = {};
     Object.keys(HEADERS).forEach(function(name) {
       result[name.charAt(0).toLowerCase() + name.slice(1)] = readSheet(name);
     });
-    return jsonOut({ ok: true, data: result }, callback);
+    return out({ ok: true, data: result }, callback);
   } catch(err) {
-    return jsonOut({ ok: false, error: err.message }, callback);
+    return out({ ok: false, error: err.message }, callback);
   }
 }
 
 function writeSheet(name, rows) {
   var sheet = SS.getSheetByName(name);
-  if (!sheet) { sheet = SS.insertSheet(name); }
+  if (!sheet) sheet = SS.insertSheet(name);
   ensureHeaders(sheet, name);
   if (!rows || !rows.length) return;
   var lastRow = sheet.getLastRow();
   if (lastRow > 1) sheet.getRange(2, 1, lastRow-1, sheet.getLastColumn()).clearContent();
-  writeRowsToSheet(sheet, name, rows, 2);
+  batchWrite(sheet, name, rows, 2);
 }
 
 function appendRows(name, rows) {
   var sheet = SS.getSheetByName(name);
   if (!sheet) { sheet = SS.insertSheet(name); ensureHeaders(sheet, name); }
   if (!rows || !rows.length) return;
-  writeRowsToSheet(sheet, name, rows, sheet.getLastRow() + 1);
+  batchWrite(sheet, name, rows, sheet.getLastRow() + 1);
 }
 
-function writeRowsToSheet(sheet, name, rows, startRow) {
+function batchWrite(sheet, name, rows, startRow) {
   var headers = HEADERS[name] || Object.keys(rows[0]);
   var data = rows.map(function(row) {
     return headers.map(function(k) {
       var v = row[k];
       if (v === null || v === undefined || v === '') return '';
-      return typeof v === 'object' ? JSON.stringify(v) : v;
+      return typeof v === 'object' ? JSON.stringify(v) : String(v);
     });
   });
-  if (data.length > 0) {
-    sheet.getRange(startRow, 1, data.length, headers.length).setValues(data);
-  }
+  if (data.length) sheet.getRange(startRow, 1, data.length, headers.length).setValues(data);
 }
 
 function readSheet(name) {
   var sheet = SS.getSheetByName(name);
   if (!sheet || sheet.getLastRow() < 2) return [];
-  var values = sheet.getDataRange().getValues();
+  var values  = sheet.getDataRange().getValues();
   var headers = values[0];
-  return values.slice(1).filter(function(row) {
-    return !row.every(function(c) { return c === ''; });
-  }).map(function(row) {
-    var obj = {};
-    headers.forEach(function(h, i) { obj[String(h)] = row[i]; });
-    return obj;
-  });
+  return values.slice(1)
+    .filter(function(row){ return !row.every(function(c){ return c === ''; }); })
+    .map(function(row){
+      var obj = {};
+      headers.forEach(function(h, i){ obj[String(h)] = row[i]; });
+      return obj;
+    });
 }
 
 function ensureHeaders(sheet, name) {
@@ -410,11 +402,11 @@ function ensureHeaders(sheet, name) {
   }
 }
 
-function jsonOut(obj, callback) {
+function out(obj, callback) {
   var text = JSON.stringify(obj);
   if (callback) text = callback + '(' + text + ')';
-  return ContentService.createTextOutput(text)
-    .setMimeType(callback ? ContentService.MimeType.JAVASCRIPT : ContentService.MimeType.JSON);
+  var mime = callback ? ContentService.MimeType.JAVASCRIPT : ContentService.MimeType.JSON;
+  return ContentService.createTextOutput(text).setMimeType(mime);
 }</pre>
       <button onclick="copyGS()" style="margin-top:8px;background:transparent;border:1px solid rgba(255,255,255,.15);color:var(--muted);padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;font-family:var(--BF)" id="copy-gs-btn">📋 Copy Script</button>
     </details>
@@ -1387,21 +1379,70 @@ async function restoreFromSheets(){
   if(!url){toast('⚠ No Apps Script URL');return;}
   if(!confirm('Replace ALL local data with data from Google Sheets?'))return;
   showSyncStatus('⬇ Loading from Google Sheets…','loading');
-  var cbName='_bbR'+Date.now(),script=document.createElement('script'),done=false;
+  try{
+    // Use fetch with cors — works on all devices when Apps Script is deployed as "Anyone"
+    var resp=await fetch(url+'?action=read',{
+      method:'GET',
+      mode:'cors',
+      cache:'no-cache'
+    });
+    if(!resp.ok)throw new Error('HTTP '+resp.status);
+    var json=await resp.json();
+    if(!json||!json.ok||!json.data)throw new Error(json&&json.error?json.error:'No data returned');
+    var d=json.data;
+    if(d.entries    &&d.entries.length)    LS.set('entries',d.entries);
+    if(d.staff      &&d.staff.length)      LS.set('staff',d.staff);
+    if(d.salons     &&d.salons.length)     LS.set('salons',d.salons);
+    if(d.customers  &&d.customers.length)  LS.set('customers',d.customers);
+    if(d.cashIn     &&d.cashIn.length)     LS.set('cashIn',d.cashIn);
+    if(d.expenses   &&d.expenses.length)   LS.set('expenses',d.expenses);
+    if(d.attendance &&d.attendance.length) LS.set('attendance',d.attendance);
+    if(d.styleCards &&d.styleCards.length) LS.set('styleCards',d.styleCards);
+    if(d.visits     &&d.visits.length)     LS.set('visits',d.visits);
+    if(d.advances   &&d.advances.length)   LS.set('advances',d.advances);
+    if(d.mgrCashIn  &&d.mgrCashIn.length)  LS.set('mgrCashIn',d.mgrCashIn);
+    if(d.mgrExpenses&&d.mgrExpenses.length) LS.set('mgrExpenses',d.mgrExpenses);
+    if(d.deductions&&d.deductions.length){
+      var dg={};
+      d.deductions.forEach(function(r){
+        var k='ded_'+r.staffId+'_'+r.month;
+        if(!dg[k])dg[k]=[];
+        dg[k].push({desc:r.desc,amount:r.amount});
+      });
+      Object.keys(dg).forEach(function(k){LS.set(k,dg[k]);});
+    }
+    if(d.attOverrides&&d.attOverrides.length){
+      d.attOverrides.forEach(function(r){
+        LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});
+      });
+    }
+    showSyncStatus('✅ Data restored!','ok');
+    toast('✅ Restored — reloading…');
+    setTimeout(function(){location.reload();},1500);
+  }catch(e){
+    // Fallback: try JSONP if cors fails
+    showSyncStatus('⬇ Retrying with alternate method…','loading');
+    restoreViaJSONP(url);
+  }
+}
+
+function restoreViaJSONP(url){
+  var cbName='_bbR'+Date.now(),done=false;
+  var script=document.createElement('script');
   var timer=setTimeout(function(){
     if(done)return;done=true;
     delete window[cbName];
     if(script.parentNode)document.head.removeChild(script);
-    showSyncStatus('❌ Timed out — check URL/internet','err');
-    toast('❌ Restore timed out');
-  },25000);
+    showSyncStatus('❌ Restore failed — check internet connection','err');
+    toast('❌ Restore failed');
+  },20000);
   window[cbName]=function(json){
     if(done)return;done=true;
     clearTimeout(timer);
     delete window[cbName];
     if(script.parentNode)document.head.removeChild(script);
     try{
-      if(!json||!json.ok||!json.data)throw new Error(json&&json.error?json.error:'No data');
+      if(!json||!json.ok||!json.data)throw new Error('No data');
       var d=json.data;
       if(d.entries    &&d.entries.length)    LS.set('entries',d.entries);
       if(d.staff      &&d.staff.length)      LS.set('staff',d.staff);
@@ -1426,14 +1467,14 @@ async function restoreFromSheets(){
       showSyncStatus('✅ Data restored!','ok');
       toast('✅ Restored — reloading…');
       setTimeout(function(){location.reload();},1500);
-    }catch(e){
-      showSyncStatus('❌ Restore failed: '+e.message,'err');
+    }catch(e2){
+      showSyncStatus('❌ Restore failed: '+e2.message,'err');
       toast('❌ Restore failed');
     }
   };
   script.onerror=function(){
     if(done)return;done=true;clearTimeout(timer);
-    showSyncStatus('❌ Could not reach Sheets — check internet','err');
+    showSyncStatus('❌ Could not reach Google Sheets','err');
     toast('❌ Network error');
   };
   script.src=url+'?action=read&callback='+cbName;
