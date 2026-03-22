@@ -97,7 +97,7 @@ function fetchLatestAndLogin(loginFn) {
     if (script.parentNode) document.head.removeChild(script);
     if (loginBtn) { loginBtn.disabled = false; loginBtn.textContent = 'Login →'; }
     loginFn(); // timeout = proceed anyway with local data
-  }, 8000);
+  }, 12000);
   
   window[cbName] = function(json) {
     if (done) return; done = true;
