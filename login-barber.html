@@ -135,7 +135,7 @@ function doLogin(){
     var staffList=JSON.parse(localStorage.getItem('bb_staff'))||[];
     var sm=staffList.find(function(u){return u.phone===phone&&u.role==='barber';});
     if(!sm){errEl.textContent='Phone not registered as a Barber. Contact your manager.';errEl.style.display='block';return;}
-    if(!sm.loginOtp||sm.loginOtp!==pin){errEl.textContent='Wrong PIN. Try again.';errEl.style.display='block';document.getElementById('pinInput').value='';document.getElementById('pinInput').focus();return;}
+    if(!sm.loginPin||sm.loginPin!==pin){errEl.textContent='Wrong PIN. Try again.';errEl.style.display='block';document.getElementById('pinInput').value='';document.getElementById('pinInput').focus();return;}
     errEl.style.display='none';
     sessionStorage.setItem('bb_role','barber');
     sessionStorage.setItem('bb_phone',phone);
