@@ -274,14 +274,13 @@ pre{font-size:11px;color:#90EE90;line-height:1.6;white-space:pre-wrap;word-break
     </div>
     <details>
       <summary style="color:var(--muted);font-size:12px;cursor:pointer">📋 View Apps Script code to paste</summary>
-      <pre id="gs-code" style="margin-top:10px">// ── BUDGET BARBER SYNC SCRIPT v6 — FINAL ──
-// Uses GET requests with JSONP — works on ALL devices (phone + laptop)
-// Data sent in chunks of 40 rows — handles large datasets reliably
+      <pre id="gs-code" style="margin-top:10px">// ── BUDGET BARBER SYNC SCRIPT v7 ──
+// Handles POST with JSON body (from mobile) + JSONP GET (for restore)
 //
 // SETUP:
 // 1. Google Sheets → Extensions → Apps Script
 // 2. Delete ALL existing code → paste this → Save (Ctrl+S)
-// 3. Deploy → New deployment → Web app → Anyone → Deploy
+// 3. Deploy → New deployment → Web app → Anyone → Deploy → Authorize
 // 4. Copy Web App URL → paste in each app Settings → Save Config
 
 const SS = SpreadsheetApp.getActiveSpreadsheet();
@@ -289,20 +288,16 @@ const SS = SpreadsheetApp.getActiveSpreadsheet();
 const HEADERS = {
   Entries:      ['id','date','time','barberId','barberName','salonId','services',
                  'phPay','cash','tip','phTip','cashTip','total','customerName','customerPhone'],
-  Staff:        ['id','name','phone','role','salonId','loginOtp',
-                 'fixedSalary','foodMoney','cleaningMoney'],
+  Staff:        ['id','name','phone','role','salonId','loginOtp','fixedSalary','foodMoney','cleaningMoney'],
   Salons:       ['id','name','location','mgrPhone'],
-  Customers:    ['id','phone','name','role','hairType','faceShape',
-                 'density','growthNotes','loginOtp'],
+  Customers:    ['id','phone','name','role','hairType','faceShape','density','growthNotes','loginOtp'],
   CashIn:       ['amount','time','date','barberId'],
   Expenses:     ['desc','amount','time','date','barberId'],
   Attendance:   ['type','date','time','ts','barberId'],
-  StyleCards:   ['id','cardId','customerId','barberId','salonId','name',
-                 'createdAt','topLength','texture','fade','guard','neckline',
-                 'beard','product','notes',
+  StyleCards:   ['id','cardId','customerId','barberId','salonId','name','createdAt',
+                 'topLength','texture','fade','guard','neckline','beard','product','notes',
                  'zoneFront','zoneTop','zoneCrown','zoneLeft','zoneRight','zoneBack'],
-  Visits:       ['id','customerId','barberId','barberName','salonId',
-                 'salonName','styleName','date','note'],
+  Visits:       ['id','customerId','barberId','barberName','salonId','salonName','styleName','date','note'],
   Advances:     ['date','amount','barberId','ts'],
   MgrCashIn:    ['amount','time','date','managerId','salonId'],
   MgrExpenses:  ['desc','amount','time','date','managerId','salonId'],
@@ -310,30 +305,48 @@ const HEADERS = {
   AttOverrides: ['staffId','month','present','half','absent']
 };
 
-function doGet(e) {
-  var p        = e.parameter || {};
-  var action   = p.action   || 'read';
-  var callback = p.callback || '';
+// ── POST: receives JSON body from apps (fetch no-cors) ──
+function doPost(e) {
+  try {
+    var body = JSON.parse(e.postData.contents);
+    var action    = body.action    || '';
+    var sheetName = body.sheet     || '';
+    var rows      = body.data      || [];
+    var replace   = body.replace;  // 1=replace, 0=append
 
-  // ── SYNC SHEET (called per-chunk from app) ──
-  if (action === 'syncSheet') {
-    try {
-      var sheetName = p.sheet || '';
-      var rows      = JSON.parse(decodeURIComponent(p.data || '[]'));
-      var replace   = (p.replace !== '0'); // true = clear+write, false = append
-      if (!HEADERS[sheetName]) return jsonOut({ ok: false, error: 'Unknown sheet: ' + sheetName }, callback);
-      if (replace) {
+    if (action === 'syncSheet' && sheetName && HEADERS[sheetName]) {
+      if (replace === 1 || replace === '1' || replace === true) {
         writeSheet(sheetName, rows);
       } else {
-        appendSheet(sheetName, rows);
+        appendRows(sheetName, rows);
       }
-      return jsonOut({ ok: true, message: 'Synced ' + sheetName + ' (' + rows.length + ' rows)' }, callback);
-    } catch(err) {
-      return jsonOut({ ok: false, error: err.message }, callback);
+      return jsonOut({ ok: true, message: 'Synced ' + sheetName + ' (' + rows.length + ')' }, '');
     }
+    return jsonOut({ ok: true, message: 'OK' }, '');
+  } catch(err) {
+    return jsonOut({ ok: false, error: err.message }, '');
+  }
+}
+
+// ── GET: read all data (for Restore via JSONP) ──
+function doGet(e) {
+  var p = e.parameter || {};
+  var callback = p.callback || '';
+  var action   = p.action   || 'read';
+
+  if (action === 'syncSheet') {
+    // Fallback GET-based sync (for compatibility)
+    try {
+      var sheetName = p.sheet || '';
+      var rows = JSON.parse(decodeURIComponent(p.data || '[]'));
+      var replace = p.replace;
+      if (replace === '1' || replace === 1) writeSheet(sheetName, rows);
+      else appendRows(sheetName, rows);
+      return jsonOut({ ok: true }, callback);
+    } catch(err) { return jsonOut({ ok: false, error: err.message }, callback); }
   }
 
-  // ── READ ALL (called by Restore) ──
+  // Default: read all sheets
   try {
     var result = {};
     Object.keys(HEADERS).forEach(function(name) {
@@ -345,9 +358,49 @@ function doGet(e) {
   }
 }
 
-// doPost kept for compatibility (not used by apps anymore)
-function doPost(e) {
-  return jsonOut({ ok: true, message: 'Use GET requests' }, '');
+function writeSheet(name, rows) {
+  var sheet = SS.getSheetByName(name);
+  if (!sheet) { sheet = SS.insertSheet(name); }
+  ensureHeaders(sheet, name);
+  if (!rows || !rows.length) return;
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) sheet.getRange(2, 1, lastRow-1, sheet.getLastColumn()).clearContent();
+  writeRowsToSheet(sheet, name, rows, 2);
+}
+
+function appendRows(name, rows) {
+  var sheet = SS.getSheetByName(name);
+  if (!sheet) { sheet = SS.insertSheet(name); ensureHeaders(sheet, name); }
+  if (!rows || !rows.length) return;
+  writeRowsToSheet(sheet, name, rows, sheet.getLastRow() + 1);
+}
+
+function writeRowsToSheet(sheet, name, rows, startRow) {
+  var headers = HEADERS[name] || Object.keys(rows[0]);
+  var data = rows.map(function(row) {
+    return headers.map(function(k) {
+      var v = row[k];
+      if (v === null || v === undefined || v === '') return '';
+      return typeof v === 'object' ? JSON.stringify(v) : v;
+    });
+  });
+  if (data.length > 0) {
+    sheet.getRange(startRow, 1, data.length, headers.length).setValues(data);
+  }
+}
+
+function readSheet(name) {
+  var sheet = SS.getSheetByName(name);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  return values.slice(1).filter(function(row) {
+    return !row.every(function(c) { return c === ''; });
+  }).map(function(row) {
+    var obj = {};
+    headers.forEach(function(h, i) { obj[String(h)] = row[i]; });
+    return obj;
+  });
 }
 
 function ensureHeaders(sheet, name) {
@@ -355,52 +408,6 @@ function ensureHeaders(sheet, name) {
     var h = HEADERS[name];
     if (h) sheet.getRange(1, 1, 1, h.length).setValues([h]);
   }
-}
-
-function writeSheet(name, rows) {
-  var sheet = SS.getSheetByName(name);
-  if (!sheet) { sheet = SS.insertSheet(name); }
-  ensureHeaders(sheet, name);
-  if (!rows || !rows.length) return;
-  // Clear existing data rows (keep header)
-  var lastRow = sheet.getLastRow();
-  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
-  writeRows(sheet, name, rows, 2);
-}
-
-function appendSheet(name, rows) {
-  var sheet = SS.getSheetByName(name);
-  if (!sheet) { sheet = SS.insertSheet(name); ensureHeaders(sheet, name); }
-  if (!rows || !rows.length) return;
-  var startRow = sheet.getLastRow() + 1;
-  writeRows(sheet, name, rows, startRow);
-}
-
-function writeRows(sheet, name, rows, startRow) {
-  var headers = HEADERS[name] || Object.keys(rows[0]);
-  for (var i = 0; i < rows.length; i++) {
-    var vals = headers.map(function(k) {
-      var v = rows[i][k];
-      if (v === null || v === undefined || v === '') return '';
-      return typeof v === 'object' ? JSON.stringify(v) : v;
-    });
-    sheet.getRange(startRow + i, 1, 1, vals.length).setValues([vals]);
-  }
-}
-
-function readSheet(name) {
-  var sheet = SS.getSheetByName(name);
-  if (!sheet || sheet.getLastRow() < 2) return [];
-  var data    = sheet.getDataRange().getValues();
-  var headers = data[0];
-  var result  = [];
-  for (var i = 1; i < data.length; i++) {
-    if (data[i].every(function(c){ return c === ''; })) continue;
-    var obj = {};
-    for (var j = 0; j < headers.length; j++) obj[String(headers[j])] = data[i][j];
-    result.push(obj);
-  }
-  return result;
 }
 
 function jsonOut(obj, callback) {
@@ -1253,92 +1260,76 @@ function downloadCSV(type){
 // Uses GET requests (works on ALL devices — no CORS issues)
 // Data is chunked to stay under URL length limits
 
+// ── GOOGLE SHEETS SYNC (mobile-safe) ──
+// WRITE: fetch POST no-cors with JSON body — works on ALL devices
+// READ:  JSONP script tag — works on ALL devices
+
 function saveSheetConfig(){
-  LS.set('sheetUrl', document.getElementById('sh-url').value.trim());
-  LS.set('sheetName', document.getElementById('sh-name').value.trim() || 'Sheet1');
-  toast('✓ Sync config saved');
+  var u=document.getElementById('sh-url').value.trim();
+  var n=document.getElementById('sh-name').value.trim()||'Sheet1';
+  LS.set('sheetUrl',u||BB_SHEET_URL);
+  LS.set('sheetName',n);
+  if(u) localStorage.setItem('bb_sheetUrl',u);
+  toast('✓ Config saved');
   startAutoSync();
 }
 
-function showSyncStatus(msg, type){
-  var el = document.getElementById('sync-status');
-  if(!el) return;
-  el.style.display = 'block';
-  el.style.background = type==='ok'  ? 'rgba(0,196,140,.15)' :
-                        type==='err' ? 'rgba(255,107,91,.15)' :
-                                       'rgba(91,196,240,.1)';
-  el.style.color = type==='ok'  ? 'var(--accent)' :
-                   type==='err' ? 'var(--danger)' : 'var(--blue)';
-  el.textContent = msg;
-  if(type !== 'loading') setTimeout(function(){ el.style.display='none'; }, 4000);
+function showSyncStatus(msg,type){
+  var el=document.getElementById('sync-status');
+  if(!el)return;
+  el.style.display='block';
+  el.style.background=type==='ok'?'rgba(0,196,140,.15)':type==='err'?'rgba(255,107,91,.15)':'rgba(91,196,240,.1)';
+  el.style.color=type==='ok'?'var(--accent)':type==='err'?'var(--danger)':'var(--blue)';
+  el.textContent=msg;
+  if(type!=='loading')setTimeout(function(){el.style.display='none';},5000);
 }
 
-// GET-based fetch — works on all devices, no CORS, no preflight
-function fetchGET(url, callback){
-  var ts = Date.now();
-  var cbName = '_bb' + ts;
-  var script = document.createElement('script');
-  var done = false;
-  var timer = setTimeout(function(){
-    if(done) return; done = true;
-    delete window[cbName];
-    if(script.parentNode) document.head.removeChild(script);
-    callback(null, 'timeout');
-  }, 30000);
-  window[cbName] = function(res){
-    if(done) return; done = true;
-    clearTimeout(timer);
-    delete window[cbName];
-    if(script.parentNode) document.head.removeChild(script);
-    callback(res, null);
-  };
-  script.onerror = function(){
-    if(done) return; done = true;
-    clearTimeout(timer);
-    delete window[cbName];
-    callback(null, 'network error');
-  };
-  script.src = url + (url.indexOf('?') > -1 ? '&' : '?') + 'callback=' + cbName;
-  document.head.appendChild(script);
+// POST a single chunk of rows — no-cors, JSON body
+function postChunk(url,sheetName,rows,replace,done){
+  fetch(url,{
+    method:'POST',
+    mode:'no-cors',
+    headers:{'Content-Type':'text/plain'}, // text/plain avoids preflight on mobile
+    body:JSON.stringify({action:'syncSheet',sheet:sheetName,data:rows,replace:replace})
+  }).then(function(){done(true);}).catch(function(e){
+    console.warn('postChunk error:',e);
+    done(false);
+  });
 }
 
-// Send one sheet — chunked into rows of max 40 at a time
-function syncSheet(url, sheetName, rows, onDone){
-  var CHUNK = 8;
-  var chunks = [];
-  for(var i = 0; i < rows.length; i += CHUNK) chunks.push(rows.slice(i, i + CHUNK));
-  if(!chunks.length){ onDone(true); return; }
-  var ci = 0;
-  function sendChunk(){
-    var chunk = chunks[ci];
-    var replace = (ci === 0) ? '1' : '0'; // first chunk replaces, rest append
-    var encoded = encodeURIComponent(JSON.stringify(chunk));
-    var queryUrl = url + '?action=syncSheet&sheet=' + encodeURIComponent(sheetName) +
-                   '&data=' + encoded + '&replace=' + replace;
-    fetchGET(queryUrl, function(res, err){
-      if(err){ console.warn('Chunk error:', err); onDone(false); return; }
+// Send one full sheet in small chunks of 5 rows
+function syncSheet(url,sheetName,rows,onDone){
+  if(!rows||!rows.length){onDone(true);return;}
+  var CHUNK=5;
+  var chunks=[];
+  for(var i=0;i<rows.length;i+=CHUNK)chunks.push(rows.slice(i,i+CHUNK));
+  var ci=0;
+  function next(){
+    if(ci>=chunks.length){onDone(true);return;}
+    var replace=(ci===0)?1:0;
+    postChunk(url,sheetName,chunks[ci],replace,function(ok){
+      if(!ok){onDone(false);return;}
       ci++;
-      if(ci < chunks.length) sendChunk();
-      else onDone(true);
+      setTimeout(next,300); // small delay between chunks to avoid rate limiting
     });
   }
-  sendChunk();
+  next();
 }
 
 async function syncAllData(){
-  var url = LS.get('sheetUrl');
-  if(!url){ toast('⚠ Enter Apps Script URL first'); return; }
-  showSyncStatus('⬆ Syncing to Google Sheets…', 'loading');
-  var sheets = {
-    Entries:     LS.get('entries')    || [],
-    Staff:       LS.get('staff')      || [],
-    Salons:      LS.get('salons')     || [],
-    Customers:   LS.get('customers')  || [],
-    CashIn:      LS.get('cashIn')     || [],
-    Expenses:    LS.get('expenses')   || [],
-    Attendance:  LS.get('attendance') || [],
-    StyleCards:  (LS.get('styleCards')||[]).map(function(c){
-      return {id:c.id,cardId:c.cardId,customerId:c.customerId,barberId:c.barberId,
+  var url=LS.get('sheetUrl')||BB_SHEET_URL;
+  if(!url){toast('⚠ No Apps Script URL');return;}
+  showSyncStatus('⬆ Syncing to Google Sheets…','loading');
+  var sheets={
+    Entries:    LS.get('entries')   ||[],
+    Staff:      LS.get('staff')     ||[],
+    Salons:     LS.get('salons')    ||[],
+    Customers:  LS.get('customers') ||[],
+    CashIn:     LS.get('cashIn')    ||[],
+    Expenses:   LS.get('expenses')  ||[],
+    Attendance: LS.get('attendance')||[],
+    StyleCards: (LS.get('styleCards')||[]).map(function(c){
+      return{id:c.id,cardId:c.cardId,customerId:c.customerId,barberId:c.barberId,
         salonId:c.salonId,name:c.name,createdAt:c.createdAt,topLength:c.topLength,
         texture:c.texture,fade:c.fade,guard:c.guard,neckline:c.neckline,
         beard:c.beard,product:c.product,notes:c.notes,
@@ -1346,140 +1337,138 @@ async function syncAllData(){
         zoneCrown:c.zones?c.zones.crown:'',zoneLeft:c.zones?c.zones.left:'',
         zoneRight:c.zones?c.zones.right:'',zoneBack:c.zones?c.zones.back:''};
     }),
-    Visits:      LS.get('visits')     || [],
-    Advances:    LS.get('advances')   || [],
-    MgrCashIn:   LS.get('mgrCashIn')  || [],
-    MgrExpenses: LS.get('mgrExpenses')|| [],
-    Deductions:  (function(){
-      var result=[];
-      try{ Object.keys(localStorage).forEach(function(k){
+    Visits:      LS.get('visits')    ||[],
+    Advances:    LS.get('advances')  ||[],
+    MgrCashIn:   LS.get('mgrCashIn') ||[],
+    MgrExpenses: LS.get('mgrExpenses')||[],
+    Deductions:(function(){
+      var r=[];try{Object.keys(localStorage).forEach(function(k){
         if(k.startsWith('bb_ded_')){
-          var parts=k.replace('bb_ded_','').split('_');
-          var sid=parts[0], mo=parts.slice(1).join('_');
-          (JSON.parse(localStorage.getItem(k))||[]).forEach(function(r){
-            result.push({staffId:sid,month:mo,desc:r.desc,amount:r.amount});
-          });
+          var p=k.replace('bb_ded_','').split('_'),sid=p[0],mo=p.slice(1).join('_');
+          (JSON.parse(localStorage.getItem(k))||[]).forEach(function(d){r.push({staffId:sid,month:mo,desc:d.desc,amount:d.amount});});
         }
-      }); }catch(e){}
-      return result;
+      });}catch(e){}return r;
     })(),
-    AttOverrides: (function(){
-      var result=[];
-      try{ Object.keys(localStorage).forEach(function(k){
+    AttOverrides:(function(){
+      var r=[];try{Object.keys(localStorage).forEach(function(k){
         if(k.startsWith('bb_att_')){
-          var parts=k.replace('bb_att_','').split('_');
-          var sid=parts[0], mo=parts.slice(1).join('_');
+          var p=k.replace('bb_att_','').split('_'),sid=p[0],mo=p.slice(1).join('_');
           var v=JSON.parse(localStorage.getItem(k))||{};
-          result.push({staffId:sid,month:mo,present:v.present||0,half:v.half||0,absent:v.absent||0});
+          r.push({staffId:sid,month:mo,present:v.present||0,half:v.half||0,absent:v.absent||0});
         }
-      }); }catch(e){}
-      return result;
+      });}catch(e){}return r;
     })()
   };
-  var names = Object.keys(sheets);
-  var done = 0; var errors = 0;
+  var names=Object.keys(sheets),done=0,errors=0;
   function next(){
-    if(done >= names.length){
-      if(errors === 0){
-        showSyncStatus('✅ All data synced to Google Sheets!', 'ok');
+    if(done>=names.length){
+      if(errors===0){
+        showSyncStatus('✅ All data synced!','ok');
         toast('✅ Synced to Sheets');
-        var el = document.getElementById('lastSyncTime');
-        if(el) el.textContent = 'Synced ' + new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
-      } else {
-        showSyncStatus('⚠ Sync partially failed — check URL / internet', 'err');
-        toast('⚠ Partial sync — try again');
+        var el=document.getElementById('lastSyncTime');
+        if(el)el.textContent='Synced '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+      }else{
+        showSyncStatus('⚠ Some sheets may have failed — retry','err');
       }
       return;
     }
-    var name = names[done]; var rows = sheets[name]; done++;
-    if(!rows.length){ next(); return; }
-    showSyncStatus('⬆ Syncing ' + name + '… (' + done + '/' + names.length + ')', 'loading');
-    syncSheet(url, name, rows, function(ok){ if(!ok) errors++; next(); });
+    var name=names[done],rows=sheets[name];done++;
+    if(!rows.length){next();return;}
+    showSyncStatus('⬆ Syncing '+name+'… ('+done+'/'+names.length+')','loading');
+    syncSheet(url,name,rows,function(ok){if(!ok)errors++;next();});
   }
   next();
 }
 
 async function restoreFromSheets(){
-  var url = LS.get('sheetUrl');
-  if(!url){ toast('⚠ Enter Apps Script URL first'); return; }
-  if(!confirm('Replace ALL local data with data from Google Sheets?')) return;
-  showSyncStatus('⬇ Loading data from Google Sheets…', 'loading');
-  fetchGET(url + '?action=read', function(json, err){
-    if(err){
-      showSyncStatus('❌ Restore failed — check URL and internet', 'err');
-      toast('❌ Restore timed out');
-      return;
-    }
+  var url=LS.get('sheetUrl')||BB_SHEET_URL;
+  if(!url){toast('⚠ No Apps Script URL');return;}
+  if(!confirm('Replace ALL local data with data from Google Sheets?'))return;
+  showSyncStatus('⬇ Loading from Google Sheets…','loading');
+  var cbName='_bbR'+Date.now(),script=document.createElement('script'),done=false;
+  var timer=setTimeout(function(){
+    if(done)return;done=true;
+    delete window[cbName];
+    if(script.parentNode)document.head.removeChild(script);
+    showSyncStatus('❌ Timed out — check URL/internet','err');
+    toast('❌ Restore timed out');
+  },25000);
+  window[cbName]=function(json){
+    if(done)return;done=true;
+    clearTimeout(timer);
+    delete window[cbName];
+    if(script.parentNode)document.head.removeChild(script);
     try{
-      if(!json || !json.ok || !json.data) throw new Error(json && json.error ? json.error : 'No data');
-      var d = json.data;
-      if(d.entries    && d.entries.length)    LS.set('entries',    d.entries);
-      if(d.staff      && d.staff.length)      LS.set('staff',      d.staff);
-      if(d.salons     && d.salons.length)     LS.set('salons',     d.salons);
-      if(d.customers  && d.customers.length)  LS.set('customers',  d.customers);
-      if(d.cashIn     && d.cashIn.length)     LS.set('cashIn',     d.cashIn);
-      if(d.expenses   && d.expenses.length)   LS.set('expenses',   d.expenses);
-      if(d.attendance && d.attendance.length) LS.set('attendance', d.attendance);
-      if(d.styleCards && d.styleCards.length) LS.set('styleCards', d.styleCards);
-      if(d.visits     && d.visits.length)     LS.set('visits',     d.visits);
-      if(d.advances   && d.advances.length)   LS.set('advances',   d.advances);
-      if(d.mgrCashIn  && d.mgrCashIn.length)  LS.set('mgrCashIn',  d.mgrCashIn);
-      if(d.mgrExpenses && d.mgrExpenses.length) LS.set('mgrExpenses', d.mgrExpenses);
-      if(d.deductions && d.deductions.length){
+      if(!json||!json.ok||!json.data)throw new Error(json&&json.error?json.error:'No data');
+      var d=json.data;
+      if(d.entries    &&d.entries.length)    LS.set('entries',d.entries);
+      if(d.staff      &&d.staff.length)      LS.set('staff',d.staff);
+      if(d.salons     &&d.salons.length)     LS.set('salons',d.salons);
+      if(d.customers  &&d.customers.length)  LS.set('customers',d.customers);
+      if(d.cashIn     &&d.cashIn.length)     LS.set('cashIn',d.cashIn);
+      if(d.expenses   &&d.expenses.length)   LS.set('expenses',d.expenses);
+      if(d.attendance &&d.attendance.length) LS.set('attendance',d.attendance);
+      if(d.styleCards &&d.styleCards.length) LS.set('styleCards',d.styleCards);
+      if(d.visits     &&d.visits.length)     LS.set('visits',d.visits);
+      if(d.advances   &&d.advances.length)   LS.set('advances',d.advances);
+      if(d.mgrCashIn  &&d.mgrCashIn.length)  LS.set('mgrCashIn',d.mgrCashIn);
+      if(d.mgrExpenses&&d.mgrExpenses.length) LS.set('mgrExpenses',d.mgrExpenses);
+      if(d.deductions&&d.deductions.length){
         var dg={};
-        d.deductions.forEach(function(r){
-          var k='ded_'+r.staffId+'_'+r.month;
-          if(!dg[k]) dg[k]=[];
-          dg[k].push({desc:r.desc,amount:r.amount});
-        });
-        Object.keys(dg).forEach(function(k){ LS.set(k, dg[k]); });
+        d.deductions.forEach(function(r){var k='ded_'+r.staffId+'_'+r.month;if(!dg[k])dg[k]=[];dg[k].push({desc:r.desc,amount:r.amount});});
+        Object.keys(dg).forEach(function(k){LS.set(k,dg[k]);});
       }
-      if(d.attOverrides && d.attOverrides.length){
-        d.attOverrides.forEach(function(r){
-          LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});
-        });
+      if(d.attOverrides&&d.attOverrides.length){
+        d.attOverrides.forEach(function(r){LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});});
       }
-      showSyncStatus('✅ Data restored from Google Sheets!', 'ok');
+      showSyncStatus('✅ Data restored!','ok');
       toast('✅ Restored — reloading…');
-      setTimeout(function(){ location.reload(); }, 1500);
-    } catch(e){
-      showSyncStatus('❌ Restore failed: ' + e.message, 'err');
+      setTimeout(function(){location.reload();},1500);
+    }catch(e){
+      showSyncStatus('❌ Restore failed: '+e.message,'err');
       toast('❌ Restore failed');
     }
-  });
+  };
+  script.onerror=function(){
+    if(done)return;done=true;clearTimeout(timer);
+    showSyncStatus('❌ Could not reach Sheets — check internet','err');
+    toast('❌ Network error');
+  };
+  script.src=url+'?action=read&callback='+cbName;
+  document.head.appendChild(script);
 }
 
-// ── AUTO SYNC every 5 minutes ──
-var autoSyncInterval = null;
+// ── AUTO-SYNC every 5 minutes (silent) ──
+var autoSyncInterval=null;
 function startAutoSync(){
-  if(autoSyncInterval) clearInterval(autoSyncInterval);
-  if(!LS.get('sheetUrl')) return;
-  autoSyncInterval = setInterval(silentSync, 5 * 60 * 1000);
+  if(autoSyncInterval)clearInterval(autoSyncInterval);
+  var url=LS.get('sheetUrl')||BB_SHEET_URL;
+  if(!url)return;
+  autoSyncInterval=setInterval(function(){silentSync();},5*60*1000);
 }
 function silentSync(){
-  var url = LS.get('sheetUrl');
-  if(!url) return;
-  var sheets = {
-    Entries:    LS.get('entries')    || [],
-    Staff:      LS.get('staff')      || [],
-    Salons:     LS.get('salons')     || [],
-    Customers:  LS.get('customers')  || [],
-    CashIn:     LS.get('cashIn')     || [],
-    Expenses:   LS.get('expenses')   || [],
-    Attendance: LS.get('attendance') || []
+  var url=LS.get('sheetUrl')||BB_SHEET_URL;
+  if(!url)return;
+  var core={
+    Entries:    LS.get('entries')   ||[],
+    Staff:      LS.get('staff')     ||[],
+    Customers:  LS.get('customers') ||[],
+    CashIn:     LS.get('cashIn')    ||[],
+    Expenses:   LS.get('expenses')  ||[],
+    Attendance: LS.get('attendance')||[]
   };
-  var names = Object.keys(sheets); var i = 0;
-  function nextSilent(){
-    if(i >= names.length){
-      var el = document.getElementById('lastSyncTime');
-      if(el) el.textContent = 'Synced ' + new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+  var names=Object.keys(core),i=0;
+  function nxt(){
+    if(i>=names.length){
+      var el=document.getElementById('lastSyncTime');
+      if(el)el.textContent='Synced '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
       return;
     }
-    var name = names[i]; var rows = sheets[name]; i++;
-    if(!rows.length){ nextSilent(); return; }
-    syncSheet(url, name, rows, function(){ nextSilent(); });
+    var name=names[i],rows=core[name];i++;
+    if(!rows.length){nxt();return;}
+    syncSheet(url,name,rows,function(){nxt();});
   }
-  nextSilent();
+  nxt();
 }
 startAutoSync();
 
