@@ -110,6 +110,7 @@ pre{font-size:11px;color:#90EE90;line-height:1.6;white-space:pre-wrap;word-break
 </style>
 </head>
 <body>
+<div id="restoreBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#003D2B;color:#F5E030;padding:12px 16px;align-items:center;justify-content:center;gap:10px;font-family:var(--BF);font-size:13px;font-weight:700;letter-spacing:.3px"><span style="animation:spin 1s linear infinite;display:inline-block">⟳</span> Loading salon data from Google Sheets…</div>
 
 <div id="setup-banner">
   <div class="sb-logo"><span class="sb-logo-text">BB</span></div>
@@ -613,6 +614,36 @@ function seedDemo(){
 }
 seedDemo();
 
+// ── AUTO-LOAD DATA ON FIRST OPEN ──
+// Runs every time the app loads. If staff data is missing or stale,
+// silently pulls latest from Google Sheets — no manual action needed.
+(function autoLoad(){
+  var url=LS.get('sheetUrl')||BB_SHEET_URL;
+  if(!url)return;
+
+  // Always check Sheets on load — show banner briefly while loading
+  var staff=LS.get('staff')||[];
+  var banner=document.getElementById('restoreBanner');
+
+  // If no data at all — must load from Sheets before proceeding
+  if(!staff.length){
+    if(banner)banner.style.display='flex';
+    fetchFromSheets(url,
+      function(data){
+        applyRestoredData(data);
+        if(banner)banner.style.display='none';
+        // Reload so the app initialises with the fresh data
+        location.reload();
+      },
+      function(err){
+        if(banner)banner.style.display='none';
+        console.warn('Auto-load failed:',err);
+        // Let the app continue — user can restore manually
+      }
+    );
+  }
+})();
+
 // ── INIT ──
 (function(){
   // Show setup banner if Google Sheets not configured yet
@@ -649,6 +680,27 @@ seedDemo();
 })();
 
 // ── AUTO SYNC (every 5 minutes) ──
+// ── AUTO-RESTORE on load (admin) ──
+(function autoRestore(){
+  var url=BB_SHEET_URL||LS.get('sheetUrl')||localStorage.getItem('bb_sheetUrl');
+  if(!url)return;
+  LS.set('sheetUrl',url);
+  localStorage.setItem('bb_sheetUrl',url);
+  // Check if staff data is empty
+  var hasData=(LS.get('staff')||[]).length>0;
+  if(hasData)return;
+  var banner=document.getElementById('restoreBanner');
+  if(banner)banner.style.display='flex';
+  fetchFromSheets(url,function(d){
+    applySheetData(d);
+    if(banner)banner.style.display='none';
+    setTimeout(function(){location.reload();},300);
+  },function(err){
+    console.warn('Auto-restore failed:',err);
+    if(banner)banner.style.display='none';
+  },15000);
+})();
+
 var autoSyncInterval=null;
 function startAutoSync(){
   if(autoSyncInterval)clearInterval(autoSyncInterval);
@@ -1374,112 +1426,144 @@ async function syncAllData(){
   next();
 }
 
-async function restoreFromSheets(){
-  var url=LS.get('sheetUrl')||BB_SHEET_URL;
-  if(!url){toast('⚠ No Apps Script URL');return;}
-  if(!confirm('Replace ALL local data with data from Google Sheets?'))return;
-  showSyncStatus('⬇ Loading from Google Sheets…','loading');
-  try{
-    // Use fetch with cors — works on all devices when Apps Script is deployed as "Anyone"
-    var resp=await fetch(url+'?action=read',{
-      method:'GET',
-      mode:'cors',
-      cache:'no-cache'
+function applyRestoredData(d){
+  if(d.entries    &&d.entries.length)    LS.set('entries',    d.entries);
+  if(d.staff      &&d.staff.length)      LS.set('staff',      d.staff);
+  if(d.salons     &&d.salons.length)     LS.set('salons',     d.salons);
+  if(d.customers  &&d.customers.length)  LS.set('customers',  d.customers);
+  if(d.cashIn     &&d.cashIn.length)     LS.set('cashIn',     d.cashIn);
+  if(d.expenses   &&d.expenses.length)   LS.set('expenses',   d.expenses);
+  if(d.attendance &&d.attendance.length) LS.set('attendance', d.attendance);
+  if(d.styleCards &&d.styleCards.length) LS.set('styleCards', d.styleCards);
+  if(d.visits     &&d.visits.length)     LS.set('visits',     d.visits);
+  if(d.advances   &&d.advances.length)   LS.set('advances',   d.advances);
+  if(d.mgrCashIn  &&d.mgrCashIn.length)  LS.set('mgrCashIn',  d.mgrCashIn);
+  if(d.mgrExpenses&&d.mgrExpenses.length) LS.set('mgrExpenses',d.mgrExpenses);
+  if(d.deductions&&d.deductions.length){
+    var dg={};
+    d.deductions.forEach(function(r){
+      var k='ded_'+r.staffId+'_'+r.month;
+      if(!dg[k])dg[k]=[];
+      dg[k].push({desc:r.desc,amount:r.amount});
     });
-    if(!resp.ok)throw new Error('HTTP '+resp.status);
-    var json=await resp.json();
-    if(!json||!json.ok||!json.data)throw new Error(json&&json.error?json.error:'No data returned');
-    var d=json.data;
-    if(d.entries    &&d.entries.length)    LS.set('entries',d.entries);
-    if(d.staff      &&d.staff.length)      LS.set('staff',d.staff);
-    if(d.salons     &&d.salons.length)     LS.set('salons',d.salons);
-    if(d.customers  &&d.customers.length)  LS.set('customers',d.customers);
-    if(d.cashIn     &&d.cashIn.length)     LS.set('cashIn',d.cashIn);
-    if(d.expenses   &&d.expenses.length)   LS.set('expenses',d.expenses);
-    if(d.attendance &&d.attendance.length) LS.set('attendance',d.attendance);
-    if(d.styleCards &&d.styleCards.length) LS.set('styleCards',d.styleCards);
-    if(d.visits     &&d.visits.length)     LS.set('visits',d.visits);
-    if(d.advances   &&d.advances.length)   LS.set('advances',d.advances);
-    if(d.mgrCashIn  &&d.mgrCashIn.length)  LS.set('mgrCashIn',d.mgrCashIn);
-    if(d.mgrExpenses&&d.mgrExpenses.length) LS.set('mgrExpenses',d.mgrExpenses);
-    if(d.deductions&&d.deductions.length){
-      var dg={};
-      d.deductions.forEach(function(r){
-        var k='ded_'+r.staffId+'_'+r.month;
-        if(!dg[k])dg[k]=[];
-        dg[k].push({desc:r.desc,amount:r.amount});
-      });
-      Object.keys(dg).forEach(function(k){LS.set(k,dg[k]);});
-    }
-    if(d.attOverrides&&d.attOverrides.length){
-      d.attOverrides.forEach(function(r){
-        LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});
-      });
-    }
-    showSyncStatus('✅ Data restored!','ok');
-    toast('✅ Restored — reloading…');
-    setTimeout(function(){location.reload();},1500);
-  }catch(e){
-    // Fallback: try JSONP if cors fails
-    showSyncStatus('⬇ Retrying with alternate method…','loading');
-    restoreViaJSONP(url);
+    Object.keys(dg).forEach(function(k){LS.set(k,dg[k]);});
+  }
+  if(d.attOverrides&&d.attOverrides.length){
+    d.attOverrides.forEach(function(r){
+      LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});
+    });
   }
 }
 
-function restoreViaJSONP(url){
-  var cbName='_bbR'+Date.now(),done=false;
+// Core JSONP fetch — works on ALL browsers including mobile
+// Google Apps Script responds with: callback({ok:true,data:{...}})
+function fetchFromSheets(url, onSuccess, onError){
+  var cbName='_bbFetch'+Date.now();
   var script=document.createElement('script');
+  var done=false;
   var timer=setTimeout(function(){
-    if(done)return;done=true;
+    if(done)return; done=true;
     delete window[cbName];
     if(script.parentNode)document.head.removeChild(script);
-    showSyncStatus('❌ Restore failed — check internet connection','err');
-    toast('❌ Restore failed');
-  },20000);
+    onError('timeout after 25 seconds — check your internet');
+  }, 25000);
   window[cbName]=function(json){
-    if(done)return;done=true;
+    if(done)return; done=true;
     clearTimeout(timer);
     delete window[cbName];
     if(script.parentNode)document.head.removeChild(script);
-    try{
-      if(!json||!json.ok||!json.data)throw new Error('No data');
-      var d=json.data;
-      if(d.entries    &&d.entries.length)    LS.set('entries',d.entries);
-      if(d.staff      &&d.staff.length)      LS.set('staff',d.staff);
-      if(d.salons     &&d.salons.length)     LS.set('salons',d.salons);
-      if(d.customers  &&d.customers.length)  LS.set('customers',d.customers);
-      if(d.cashIn     &&d.cashIn.length)     LS.set('cashIn',d.cashIn);
-      if(d.expenses   &&d.expenses.length)   LS.set('expenses',d.expenses);
-      if(d.attendance &&d.attendance.length) LS.set('attendance',d.attendance);
-      if(d.styleCards &&d.styleCards.length) LS.set('styleCards',d.styleCards);
-      if(d.visits     &&d.visits.length)     LS.set('visits',d.visits);
-      if(d.advances   &&d.advances.length)   LS.set('advances',d.advances);
-      if(d.mgrCashIn  &&d.mgrCashIn.length)  LS.set('mgrCashIn',d.mgrCashIn);
-      if(d.mgrExpenses&&d.mgrExpenses.length) LS.set('mgrExpenses',d.mgrExpenses);
-      if(d.deductions&&d.deductions.length){
-        var dg={};
-        d.deductions.forEach(function(r){var k='ded_'+r.staffId+'_'+r.month;if(!dg[k])dg[k]=[];dg[k].push({desc:r.desc,amount:r.amount});});
-        Object.keys(dg).forEach(function(k){LS.set(k,dg[k]);});
-      }
-      if(d.attOverrides&&d.attOverrides.length){
-        d.attOverrides.forEach(function(r){LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});});
-      }
-      showSyncStatus('✅ Data restored!','ok');
-      toast('✅ Restored — reloading…');
-      setTimeout(function(){location.reload();},1500);
-    }catch(e2){
-      showSyncStatus('❌ Restore failed: '+e2.message,'err');
-      toast('❌ Restore failed');
-    }
+    if(json&&json.ok&&json.data) onSuccess(json.data);
+    else onError(json&&json.error?json.error:'No data returned from Sheets');
   };
   script.onerror=function(){
-    if(done)return;done=true;clearTimeout(timer);
-    showSyncStatus('❌ Could not reach Google Sheets','err');
-    toast('❌ Network error');
+    if(done)return; done=true;
+    clearTimeout(timer);
+    delete window[cbName];
+    if(script.parentNode)document.head.removeChild(script);
+    onError('Could not reach Google Sheets — check internet connection');
   };
-  script.src=url+'?action=read&callback='+cbName;
+  // Add a cache-buster so mobile browsers don't serve a cached (possibly empty) response
+  script.src=url+'?action=read&callback='+cbName+'&_='+Date.now();
   document.head.appendChild(script);
 }
+
+// ── SHARED: apply restored data to localStorage ──
+function applySheetData(d){
+  if(d.entries    &&d.entries.length)    LS.set('entries',d.entries);
+  if(d.staff      &&d.staff.length)      LS.set('staff',d.staff);
+  if(d.salons     &&d.salons.length)     LS.set('salons',d.salons);
+  if(d.customers  &&d.customers.length)  LS.set('customers',d.customers);
+  if(d.cashIn     &&d.cashIn.length)     LS.set('cashIn',d.cashIn);
+  if(d.expenses   &&d.expenses.length)   LS.set('expenses',d.expenses);
+  if(d.attendance &&d.attendance.length) LS.set('attendance',d.attendance);
+  if(d.styleCards &&d.styleCards.length) LS.set('styleCards',d.styleCards);
+  if(d.visits     &&d.visits.length)     LS.set('visits',d.visits);
+  if(d.advances   &&d.advances.length)   LS.set('advances',d.advances);
+  if(d.mgrCashIn  &&d.mgrCashIn.length)  LS.set('mgrCashIn',d.mgrCashIn);
+  if(d.mgrExpenses&&d.mgrExpenses.length) LS.set('mgrExpenses',d.mgrExpenses);
+  if(d.deductions&&d.deductions.length){
+    var dg={};
+    d.deductions.forEach(function(r){
+      var k='ded_'+r.staffId+'_'+r.month;
+      if(!dg[k])dg[k]=[];
+      dg[k].push({desc:r.desc,amount:r.amount});
+    });
+    Object.keys(dg).forEach(function(k){LS.set(k,dg[k]);});
+  }
+  if(d.attOverrides&&d.attOverrides.length){
+    d.attOverrides.forEach(function(r){
+      LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});
+    });
+  }
+}
+
+// ── JSONP fetch from Sheets (works on all devices) ──
+function fetchFromSheets(url, onSuccess, onFail, timeoutMs){
+  timeoutMs = timeoutMs || 20000;
+  var cbName='_bbFetch'+Date.now(), done=false;
+  var script=document.createElement('script');
+  var timer=setTimeout(function(){
+    if(done)return; done=true;
+    delete window[cbName];
+    if(script.parentNode)document.head.removeChild(script);
+    if(onFail)onFail('timeout');
+  }, timeoutMs);
+  window[cbName]=function(json){
+    if(done)return; done=true;
+    clearTimeout(timer);
+    delete window[cbName];
+    if(script.parentNode)document.head.removeChild(script);
+    if(json&&json.ok&&json.data) onSuccess(json.data);
+    else if(onFail)onFail(json&&json.error?json.error:'no data');
+  };
+  script.onerror=function(){
+    if(done)return; done=true;
+    clearTimeout(timer);
+    delete window[cbName];
+    if(onFail)onFail('network error');
+  };
+  // Add timestamp to bypass cache
+  script.src=url+'?action=read&callback='+cbName+'&t='+Date.now();
+  document.head.appendChild(script);
+}
+
+async function restoreFromSheets(){
+  var url=BB_SHEET_URL||LS.get('sheetUrl')||localStorage.getItem('bb_sheetUrl');
+  if(!url){toast('⚠ No Apps Script URL configured');return;}
+  if(!confirm('Replace ALL local data with data from Google Sheets?'))return;
+  showSyncStatus('⬇ Loading from Google Sheets…','loading');
+  fetchFromSheets(url, function(d){
+    applySheetData(d);
+    showSyncStatus('✅ Data restored successfully!','ok');
+    toast('✅ Restored — reloading…');
+    setTimeout(function(){location.reload();},1500);
+  }, function(err){
+    showSyncStatus('❌ Restore failed: '+err+' — check internet & URL','err');
+    toast('❌ Restore failed: '+err);
+  }, 25000);
+}
+
+
 
 // ── AUTO-SYNC every 5 minutes (silent) ──
 var autoSyncInterval=null;
