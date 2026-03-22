@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Budget Barber – Franchise Login</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow:wght@400;500;600;700;800;900&family=Barlow+Condensed:wght@700;800;900&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Barlow',sans-serif;background:#F0F0EA;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px 20px}
+.card{background:white;border-radius:16px;padding:32px 24px;width:100%;max-width:380px;box-shadow:0 4px 24px rgba(0,0,0,.10);border:1px solid #E0E0D8}
+.logo-wrap{text-align:center;margin-bottom:24px}
+.logo-box{display:inline-block;background:#F5E030;border-radius:10px;padding:10px 24px}
+.logo-text{font-family:'Bebas Neue',sans-serif;font-size:32px;color:#003D2B;line-height:1;letter-spacing:2px;display:block}
+.role-banner{background:#004F38;color:#F5E030;border-radius:10px;padding:14px 16px;display:flex;align-items:center;gap:12px;margin-bottom:24px}
+.role-icon{font-size:26px}
+.role-title{font-family:'Barlow Condensed',sans-serif;font-size:16px;font-weight:900;letter-spacing:1.5px;text-transform:uppercase;display:block}
+.role-sub{font-size:11px;color:rgba(245,224,48,.6);margin-top:2px;display:block}
+h2{font-size:22px;font-weight:800;color:#1A1A14;margin-bottom:4px}
+.sub{font-size:13px;color:#767668;margin-bottom:22px}
+label{display:block;font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#767668;margin-bottom:8px}
+input[type="tel"],input[type="password"]{width:100%;background:#F8F8F4;border:2px solid #E0E0D8;border-radius:8px;padding:14px 15px;font-family:'Barlow',sans-serif;font-size:17px;font-weight:500;color:#1A1A14;outline:none;transition:border-color .2s;-webkit-appearance:none}
+input:focus{border-color:#004F38}
+input::placeholder{color:#AAAAAA}
+.fg{margin-bottom:18px}
+.btn{width:100%;padding:15px;border-radius:8px;border:none;cursor:pointer;font-family:'Barlow',sans-serif;font-size:15px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;transition:all .15s;display:block;text-align:center;text-decoration:none}
+.btn:active{transform:scale(.97)}
+.btn-primary{background:#004F38;color:#F5E030}
+.btn-primary:hover{background:#006648}
+.btn-secondary{background:transparent;border:2px solid #E0E0D8;color:#767668;margin-top:10px}
+.btn-secondary:hover{border-color:#004F38;color:#004F38}
+.err{color:#DC2626;font-size:13px;font-weight:600;text-align:center;margin-bottom:12px;display:none}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo-wrap">
+    <div class="logo-box"><span class="logo-text">BB</span></div>
+  </div>
+  <div class="role-banner">
+    <span class="role-icon">🏢</span>
+    <div><span class="role-title">Franchise Owner</span><span class="role-sub">View your outlet's performance</span></div>
+  </div>
+  <h2>Franchise Portal</h2>
+  <p class="sub">Enter your phone number and 4-digit PIN</p>
+  <div id="errMsg" class="err">Wrong phone or PIN. Please try again.</div>
+  <div class="fg">
+    <label>Mobile Number</label>
+    <input type="tel" id="phoneInput" placeholder="Your 10-digit mobile number" maxlength="10" oninput="this.value=this.value.replace(/\D/g,'')">
+  </div>
+  <div class="fg">
+    <label>PIN</label>
+    <input type="password" id="pinInput" placeholder="4-digit PIN" maxlength="4" inputmode="numeric" oninput="this.value=this.value.replace(/\D/g,'')">
+  </div>
+  
+  <!-- Restore from Sheets (shown when no local data) -->
+  <div id="restore-section" style="display:none;margin-top:20px;background:rgba(255,209,0,.08);border:1.5px solid rgba(255,209,0,.25);border-radius:10px;padding:14px">
+    <div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#767668;margin-bottom:8px">📡 First Time on This Device?</div>
+    <div style="font-size:12px;color:#767668;margin-bottom:10px;line-height:1.5">Paste your salon's Google Sheets URL to load staff data, then log in normally.</div>
+    <input type="url" id="restore-url" placeholder="https://script.google.com/macros/s/..."
+      style="width:100%;padding:9px 11px;background:#F8F8F4;border:2px solid #E0E0D8;border-radius:8px;font-size:12px;font-family:inherit;outline:none;margin-bottom:8px;color:#1A1A14">
+    <button onclick="doRestoreLogin()" style="width:100%;padding:11px;background:#004F38;border:none;border-radius:8px;font-size:13px;font-weight:800;color:#F5E030;font-family:inherit;cursor:pointer;text-transform:uppercase;letter-spacing:.5px">⬇ Load Staff Data</button>
+    <div id="restore-status" style="font-size:11px;color:#767668;margin-top:8px;min-height:16px;text-align:center"></div>
+  </div>
+
+  <button class="btn btn-primary" id="loginBtn" onclick="fetchLatestAndLogin(doLogin)">Login →</button>
+  <a href="index.html" class="btn btn-secondary">← Back to Portals</a>
+</div>
+<script>
+// Ensure Sheet URL is always set
+(function(){
+  var SHEET_URL='https://script.google.com/macros/s/AKfycbwaTYPcStdiRKSNVT-tQCwyUWpeeQyRLgBkMceWxq_U20ATRw-bu6BKCWwqVCuK6E05/exec';
+  if(!localStorage.getItem('bb_sheetUrl')&&SHEET_URL)
+    localStorage.setItem('bb_sheetUrl',SHEET_URL);
+})();
+
+// Auto-fetch latest data from Google Sheets before login check
+// This ensures PINs are always current from any device
+function fetchLatestAndLogin(loginFn) {
+  var url = localStorage.getItem('bb_sheetUrl');
+  if (!url) { loginFn(); return; }
+  
+  var cbName = '_bbLogin' + Date.now();
+  var script = document.createElement('script');
+  var done = false;
+  var errEl = document.getElementById('errMsg');
+  
+  // Show loading state briefly
+  var loginBtn = document.getElementById('loginBtn');
+  if (loginBtn) { loginBtn.disabled = true; loginBtn.textContent = 'Checking…'; }
+  
+  var timer = setTimeout(function() {
+    if (done) return; done = true;
+    delete window[cbName];
+    if (script.parentNode) document.head.removeChild(script);
+    if (loginBtn) { loginBtn.disabled = false; loginBtn.textContent = 'Login →'; }
+    loginFn(); // timeout = proceed anyway with local data
+  }, 8000);
+  
+  window[cbName] = function(json) {
+    if (done) return; done = true;
+    clearTimeout(timer);
+    delete window[cbName];
+    if (script.parentNode) document.head.removeChild(script);
+    if (loginBtn) { loginBtn.disabled = false; loginBtn.textContent = 'Login →'; }
+    try {
+      if (json && json.ok && json.data) {
+        var d = json.data;
+        if (d.staff      && d.staff.length)     localStorage.setItem('bb_staff',     JSON.stringify(d.staff));
+        if (d.customers  && d.customers.length)  localStorage.setItem('bb_customers', JSON.stringify(d.customers));
+        if (d.salons     && d.salons.length)     localStorage.setItem('bb_salons',    JSON.stringify(d.salons));
+      }
+    } catch(e) {}
+    loginFn();
+  };
+  
+  script.onerror = function() {
+    if (done) return; done = true;
+    clearTimeout(timer);
+    if (loginBtn) { loginBtn.disabled = false; loginBtn.textContent = 'Login →'; }
+    loginFn();
+  };
+  
+  script.src = url + '?action=read&callback=' + cbName;
+  document.head.appendChild(script);
+}
+
+function doLogin(){
+  var phone=document.getElementById('phoneInput').value.trim();
+  var pin  =document.getElementById('pinInput').value.trim();
+  var errEl=document.getElementById('errMsg');
+  if(phone.length<8){errEl.textContent='Enter a valid phone number';errEl.style.display='block';document.getElementById('phoneInput').focus();return;}
+  if(pin.length<4){errEl.textContent='Enter your 4-digit PIN';errEl.style.display='block';document.getElementById('pinInput').focus();return;}
+  try{
+    var staffList=JSON.parse(localStorage.getItem('bb_staff'))||[];
+    var sm=staffList.find(function(u){return u.phone===phone&&u.role==='franchise';});
+    if(!sm){errEl.textContent='Phone not registered as a Franchise Owner. Contact admin.';errEl.style.display='block';return;}
+    if(!sm.loginOtp||sm.loginOtp!==pin){errEl.textContent='Wrong PIN. Try again.';errEl.style.display='block';document.getElementById('pinInput').value='';document.getElementById('pinInput').focus();return;}
+    errEl.style.display='none';
+    sessionStorage.setItem('bb_role','franchise');
+    sessionStorage.setItem('bb_phone',phone);
+    sessionStorage.setItem('bb_name',sm.name||'Franchise Owner');
+    if(sm.salonId) sessionStorage.setItem('bb_salonId',sm.salonId);
+    window.location.href='app-franchise.html';
+  }catch(e){errEl.textContent='Login error. Please try again.';errEl.style.display='block';}
+}
+document.addEventListener('keydown',function(e){if(e.key==='Enter')doLogin();});
+
+// ── FIRST-DEVICE RESTORE ──
+(function(){
+  var hasData=localStorage.getItem('bb_staff')||localStorage.getItem('bb_customers');
+  if(!hasData){var el=document.getElementById('restore-section');if(el)el.style.display='block';}
+})();
+function doRestoreLogin(){
+  var url=document.getElementById('restore-url').value.trim();
+  if(!url){document.getElementById('restore-status').textContent='⚠ Paste the URL first';return;}
+  document.getElementById('restore-status').textContent='⬇ Loading…';
+  var cbName='_lr'+Date.now();
+  var script=document.createElement('script');
+  var done=false;
+  var timer=setTimeout(function(){
+    if(done)return;done=true;delete window[cbName];if(script.parentNode)document.head.removeChild(script);
+    document.getElementById('restore-status').textContent='❌ Timed out.';
+  },25000);
+  window[cbName]=function(json){
+    if(done)return;done=true;clearTimeout(timer);delete window[cbName];if(script.parentNode)document.head.removeChild(script);
+    try{
+      if(!json||!json.ok||!json.data)throw new Error(json&&json.error?json.error:'No data');
+      var d=json.data;
+      if(d.staff    &&d.staff.length)    localStorage.setItem('bb_staff',    JSON.stringify(d.staff));
+      if(d.salons   &&d.salons.length)   localStorage.setItem('bb_salons',   JSON.stringify(d.salons));
+      if(d.customers&&d.customers.length)localStorage.setItem('bb_customers',JSON.stringify(d.customers));
+      if(d.entries  &&d.entries.length)  localStorage.setItem('bb_entries',  JSON.stringify(d.entries));
+      if(d.cashIn   &&d.cashIn.length)   localStorage.setItem('bb_cashIn',   JSON.stringify(d.cashIn));
+      if(d.expenses &&d.expenses.length) localStorage.setItem('bb_expenses', JSON.stringify(d.expenses));
+      if(d.attendance&&d.attendance.length)localStorage.setItem('bb_attendance',JSON.stringify(d.attendance));
+      if(d.styleCards&&d.styleCards.length)localStorage.setItem('bb_styleCards',JSON.stringify(d.styleCards));
+      if(d.visits   &&d.visits.length)   localStorage.setItem('bb_visits',   JSON.stringify(d.visits));
+      localStorage.setItem('bb_sheetUrl',url);
+      localStorage.setItem('bb_seeded','true');
+      var rs=document.getElementById('restore-section');if(rs)rs.style.display='none';
+      document.getElementById('restore-status').textContent='✅ Data loaded! Now enter your PIN.';
+    }catch(e){document.getElementById('restore-status').textContent='❌ '+e.message;}
+  };
+  script.onerror=function(){if(done)return;done=true;clearTimeout(timer);document.getElementById('restore-status').textContent='❌ Could not reach URL.';};
+  script.src=url+(url.indexOf('?')>-1?'&':'?')+'action=read&callback='+cbName;
+  document.head.appendChild(script);
+}
+
+</script>
+</body>
+</html>
