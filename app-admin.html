@@ -276,26 +276,23 @@ pre{font-size:11px;color:#90EE90;line-height:1.6;white-space:pre-wrap;word-break
     <details>
       <summary style="color:var(--muted);font-size:12px;cursor:pointer">📋 View Apps Script code to paste</summary>
       <pre id="gs-code" style="margin-top:10px">// ── BUDGET BARBER SYNC SCRIPT v8 ──
-// Uses short param names to keep URLs compact
-// JSONP for both reads and writes
-//
-// SETUP:
-// 1. Google Sheets → Extensions → Apps Script
-// 2. Delete ALL code → paste this → Save
-// 3. Deploy → New deployment → Web app → Anyone → Deploy → Authorize
-// 4. Copy URL → paste in each app Settings
+// POST (JSON body) for writes + GET (fetch/JSONP) for reads
+// Deploy as Web App → Anyone (no Google sign-in required)
 
 const SS = SpreadsheetApp.getActiveSpreadsheet();
 
 const HEADERS = {
-  Entries:      ['id','date','time','barberId','barberName','salonId','services','phPay','cash','tip','phTip','cashTip','total','customerName','customerPhone'],
+  Entries:      ['id','date','time','barberId','barberName','salonId','services',
+                 'phPay','cash','tip','phTip','cashTip','total','customerName','customerPhone'],
   Staff:        ['id','name','phone','role','salonId','loginOtp','fixedSalary','foodMoney','cleaningMoney'],
   Salons:       ['id','name','location','mgrPhone'],
   Customers:    ['id','phone','name','role','hairType','faceShape','density','growthNotes','loginOtp'],
   CashIn:       ['amount','time','date','barberId'],
   Expenses:     ['desc','amount','time','date','barberId'],
   Attendance:   ['type','date','time','ts','barberId'],
-  StyleCards:   ['id','cardId','customerId','barberId','salonId','name','createdAt','topLength','texture','fade','guard','neckline','beard','product','notes','zoneFront','zoneTop','zoneCrown','zoneLeft','zoneRight','zoneBack'],
+  StyleCards:   ['id','cardId','customerId','barberId','salonId','name','createdAt',
+                 'topLength','texture','fade','guard','neckline','beard','product','notes',
+                 'zoneFront','zoneTop','zoneCrown','zoneLeft','zoneRight','zoneBack'],
   Visits:       ['id','customerId','barberId','barberName','salonId','salonName','styleName','date','note'],
   Advances:     ['date','amount','barberId','ts'],
   MgrCashIn:    ['amount','time','date','managerId','salonId'],
@@ -304,30 +301,47 @@ const HEADERS = {
   AttOverrides: ['staffId','month','present','half','absent']
 };
 
-function doGet(e) {
-  var p        = e.parameter || {};
-  var action   = p.action || p.a || 'read';
-  var callback = p.callback || p.cb || '';
+function doPost(e) {
+  try {
+    var body      = JSON.parse(e.postData.contents);
+    var action    = body.action    || '';
+    var sheetName = body.sheet     || '';
+    var rows      = body.data      || [];
+    var replace   = body.replace;
 
-  if (action === 'w') {
-    // Write: short param 'w' for write
-    try {
-      var sheetName = p.s || p.sheet || '';
-      var rows      = JSON.parse(decodeURIComponent(p.d || p.data || '[]'));
-      var replace   = (p.r === '1' || p.r === 1 || p.replace === '1');
-      if (!HEADERS[sheetName]) throw new Error('Unknown sheet: ' + sheetName);
-      if (replace) {
+    if (action === 'syncSheet' && sheetName && HEADERS[sheetName]) {
+      if (replace === 1 || replace === '1' || replace === true) {
         writeSheet(sheetName, rows);
       } else {
         appendRows(sheetName, rows);
       }
-      return out({ ok: true, n: rows.length }, callback);
+      return out({ ok: true, message: 'Synced ' + sheetName + ' (' + rows.length + ')' }, '');
+    }
+    return out({ ok: true, message: 'OK' }, '');
+  } catch(err) {
+    return out({ ok: false, error: err.message }, '');
+  }
+}
+
+function doGet(e) {
+  var p        = e.parameter || {};
+  var callback = p.callback  || '';
+  var action   = p.action    || 'read';
+
+  if (action === 'syncSheet') {
+    try {
+      var sheetName = p.sheet || '';
+      var rows      = JSON.parse(decodeURIComponent(p.data || '[]'));
+      var replace   = p.replace;
+      if (replace === '1' || replace === 1) writeSheet(sheetName, rows);
+      else appendRows(sheetName, rows);
+      return out({ ok: true }, callback);
     } catch(err) {
-      return out({ ok: false, e: err.message }, callback);
+      return out({ ok: false, error: err.message }, callback);
     }
   }
 
-  // Read all sheets
+  // Default: read all sheets (called by Restore)
   try {
     var result = {};
     Object.keys(HEADERS).forEach(function(name) {
@@ -335,82 +349,65 @@ function doGet(e) {
     });
     return out({ ok: true, data: result }, callback);
   } catch(err) {
-    return out({ ok: false, e: err.message }, callback);
-  }
-}
-
-function doPost(e) {
-  // Also handle POST for compatibility
-  try {
-    var body = JSON.parse(e.postData.contents);
-    var action = body.action || '';
-    var sheetName = body.sheet || '';
-    var rows = body.data || [];
-    var replace = (body.replace === 1 || body.replace === '1' || body.replace === true);
-    if (action === 'syncSheet' && HEADERS[sheetName]) {
-      if (replace) writeSheet(sheetName, rows);
-      else appendRows(sheetName, rows);
-      return out({ ok: true }, '');
-    }
-    return out({ ok: true }, '');
-  } catch(err) {
-    return out({ ok: false, e: err.message }, '');
+    return out({ ok: false, error: err.message }, callback);
   }
 }
 
 function writeSheet(name, rows) {
-  var sheet = SS.getSheetByName(name) || SS.insertSheet(name);
+  var sheet = SS.getSheetByName(name);
+  if (!sheet) sheet = SS.insertSheet(name);
   ensureHeaders(sheet, name);
   if (!rows || !rows.length) return;
-  var last = sheet.getLastRow();
-  if (last > 1) sheet.getRange(2, 1, last-1, sheet.getLastColumn()).clearContent();
-  writeRows(sheet, name, rows, 2);
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) sheet.getRange(2, 1, lastRow-1, sheet.getLastColumn()).clearContent();
+  batchWrite(sheet, name, rows, 2);
 }
 
 function appendRows(name, rows) {
-  var sheet = SS.getSheetByName(name) || SS.insertSheet(name);
-  ensureHeaders(sheet, name);
+  var sheet = SS.getSheetByName(name);
+  if (!sheet) { sheet = SS.insertSheet(name); ensureHeaders(sheet, name); }
   if (!rows || !rows.length) return;
-  writeRows(sheet, name, rows, sheet.getLastRow() + 1);
+  batchWrite(sheet, name, rows, sheet.getLastRow() + 1);
 }
 
-function writeRows(sheet, name, rows, start) {
-  var h = HEADERS[name] || Object.keys(rows[0]);
+function batchWrite(sheet, name, rows, startRow) {
+  var headers = HEADERS[name] || Object.keys(rows[0]);
   var data = rows.map(function(row) {
-    return h.map(function(k) {
+    return headers.map(function(k) {
       var v = row[k];
-      return (v===null||v===undefined||v==='') ? '' : (typeof v==='object' ? JSON.stringify(v) : v);
+      if (v === null || v === undefined || v === '') return '';
+      return typeof v === 'object' ? JSON.stringify(v) : String(v);
     });
   });
-  if (data.length) sheet.getRange(start, 1, data.length, h.length).setValues(data);
+  if (data.length) sheet.getRange(startRow, 1, data.length, headers.length).setValues(data);
 }
 
 function readSheet(name) {
   var sheet = SS.getSheetByName(name);
   if (!sheet || sheet.getLastRow() < 2) return [];
-  var vals = sheet.getDataRange().getValues();
-  var headers = vals[0];
-  return vals.slice(1)
-    .filter(function(r){ return !r.every(function(c){return c==='';});})
-    .map(function(r){
-      var o={};
-      headers.forEach(function(h,i){o[String(h)]=r[i];});
-      return o;
+  var values  = sheet.getDataRange().getValues();
+  var headers = values[0];
+  return values.slice(1)
+    .filter(function(row){ return !row.every(function(c){ return c === ''; }); })
+    .map(function(row){
+      var obj = {};
+      headers.forEach(function(h, i){ obj[String(h)] = row[i]; });
+      return obj;
     });
 }
 
 function ensureHeaders(sheet, name) {
   if (sheet.getLastRow() === 0) {
     var h = HEADERS[name];
-    if (h) sheet.getRange(1,1,1,h.length).setValues([h]);
+    if (h) sheet.getRange(1, 1, 1, h.length).setValues([h]);
   }
 }
 
-function out(obj, cb) {
-  var t = JSON.stringify(obj);
-  if (cb) t = cb + '(' + t + ')';
-  return ContentService.createTextOutput(t)
-    .setMimeType(cb ? ContentService.MimeType.JAVASCRIPT : ContentService.MimeType.JSON);
+function out(obj, callback) {
+  var text = JSON.stringify(obj);
+  if (callback) text = callback + '(' + text + ')';
+  var mime = callback ? ContentService.MimeType.JAVASCRIPT : ContentService.MimeType.JSON;
+  return ContentService.createTextOutput(text).setMimeType(mime);
 }</pre>
       <button onclick="copyGS()" style="margin-top:8px;background:transparent;border:1px solid rgba(255,255,255,.15);color:var(--muted);padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;font-family:var(--BF)" id="copy-gs-btn">📋 Copy Script</button>
     </details>
@@ -588,13 +585,22 @@ function out(obj, cb) {
 <script>
 var BB_SHEET_URL='https://script.google.com/macros/s/AKfycbwaTYPcStdiRKSNVT-tQCwyUWpeeQyRLgBkMceWxq_U20ATRw-bu6BKCWwqVCuK6E05/exec';
 
+var SESSION_PHONE=sessionStorage.getItem('bb_phone');
+var SESSION_ROLE=sessionStorage.getItem('bb_role');
+if(!SESSION_PHONE||SESSION_ROLE!=='admin'){window.location.href='login-admin.html';}
+
+var LS={
+  get:function(k){try{return JSON.parse(localStorage.getItem('bb_'+k));}catch(e){return null;}},
+  set:function(k,v){localStorage.setItem('bb_'+k,JSON.stringify(v));}
+};
+
 // Ensure Sheet URL always configured
 (function(){var U='https://script.google.com/macros/s/AKfycbwaTYPcStdiRKSNVT-tQCwyUWpeeQyRLgBkMceWxq_U20ATRw-bu6BKCWwqVCuK6E05/exec';if(!localStorage.getItem('bb_sheetUrl'))localStorage.setItem('bb_sheetUrl',U);})();
 function today(){return new Date().toLocaleDateString('en-IN');}
 function todayISO(){return new Date().toISOString().split('T')[0];}
 function fmtINR(n){return '₹'+Number(n).toLocaleString('en-IN');}
 function getEntries(){return LS.get('entries')||[];}
-function setEntries(arr){LS.set('entries',arr);var _u=LS.get('sheetUrl')||BB_SHEET_URL;if(_u)syncSheet(_u,'Entries',arr,function(){});}
+function setEntries(arr){LS.set('entries',arr);}
 function filterByDate(e,ds){if(!ds)return e;var p=ds.split('-');var l=parseInt(p[2])+'/'+parseInt(p[1])+'/'+p[0];return e.filter(function(x){return x.date===l;});}
 function filterByMonth(e,mo){if(!mo)return e;var p=mo.split('-');return e.filter(function(x){var d=x.date.split('/');return parseInt(d[1])===parseInt(p[1])&&parseInt(d[2])===parseInt(p[0]);});}
 
@@ -1361,121 +1367,63 @@ function downloadCSV(type){
 // WRITE: fetch POST no-cors with JSON body — works on ALL devices
 // READ:  JSONP script tag — works on ALL devices
 
-// ── GOOGLE SHEETS SYNC ──
-// Uses JSONP (script tag) for ALL operations — works on every device
-// This is the only cross-origin method that works on mobile Safari, Android Chrome, and desktop
-
-var BB_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwaTYPcStdiRKSNVT-tQCwyUWpeeQyRLgBkMceWxq_U20ATRw-bu6BKCWwqVCuK6E05/exec';
-
 function saveSheetConfig(){
-  var u = document.getElementById('sh-url').value.trim();
-  var n = document.getElementById('sh-name').value.trim() || 'Sheet1';
-  if(u){ BB_SHEET_URL = u; LS.set('sheetUrl',u); localStorage.setItem('bb_sheetUrl',u); }
+  var u=document.getElementById('sh-url').value.trim();
+  var n=document.getElementById('sh-name').value.trim()||'Sheet1';
+  LS.set('sheetUrl',u||BB_SHEET_URL);
   LS.set('sheetName',n);
+  if(u) localStorage.setItem('bb_sheetUrl',u);
   toast('✓ Config saved');
   startAutoSync();
 }
 
-function showSyncStatus(msg, type){
-  var el = document.getElementById('sync-status');
-  if(!el) return;
-  el.style.display = 'block';
-  el.style.background = type==='ok'  ? 'rgba(0,196,140,.15)' :
-                        type==='err' ? 'rgba(255,107,91,.15)' : 'rgba(91,196,240,.1)';
-  el.style.color = type==='ok' ? 'var(--accent)' : type==='err' ? 'var(--danger)' : 'var(--blue)';
-  el.textContent = msg;
-  if(type !== 'loading') setTimeout(function(){ el.style.display='none'; }, 5000);
+function showSyncStatus(msg,type){
+  var el=document.getElementById('sync-status');
+  if(!el)return;
+  el.style.display='block';
+  el.style.background=type==='ok'?'rgba(0,196,140,.15)':type==='err'?'rgba(255,107,91,.15)':'rgba(91,196,240,.1)';
+  el.style.color=type==='ok'?'var(--accent)':type==='err'?'var(--danger)':'var(--blue)';
+  el.textContent=msg;
+  if(type!=='loading')setTimeout(function(){el.style.display='none';},5000);
 }
 
-// Core JSONP call — works on ALL browsers, ALL devices, NO CORS issues
-function jsonpCall(url, callback){
-  var cbName = '_bb' + Date.now() + Math.floor(Math.random()*1000);
-  var script = document.createElement('script');
-  var done = false;
-  var timer = setTimeout(function(){
-    if(done) return; done = true;
-    delete window[cbName];
-    if(script.parentNode) document.head.removeChild(script);
-    callback(null, 'timeout');
-  }, 20000);
-  window[cbName] = function(res){
-    if(done) return; done = true;
-    clearTimeout(timer);
-    delete window[cbName];
-    if(script.parentNode) document.head.removeChild(script);
-    callback(res, null);
-  };
-  script.onerror = function(){
-    if(done) return; done = true;
-    clearTimeout(timer);
-    delete window[cbName];
-    callback(null, 'error');
-  };
-  // Append callback to URL
-  var sep = url.indexOf('?') > -1 ? '&' : '?';
-  script.src = url + sep + 'callback=' + cbName;
-  document.head.appendChild(script);
-}
-
-// Send one chunk of rows via JSONP GET
-function sendChunkJSONP(url, sheetName, rows, replace, onDone){
-  // Minimize each row — only send defined non-empty values
-  var minRows = rows.map(function(r){
-    var out = {};
-    Object.keys(r).forEach(function(k){ if(r[k]!==''&&r[k]!==null&&r[k]!==undefined) out[k]=r[k]; });
-    return out;
-  });
-  var encoded = encodeURIComponent(JSON.stringify(minRows));
-  var callUrl = url + '?action=w&s=' + encodeURIComponent(sheetName) +
-                '&d=' + encoded + '&r=' + (replace?1:0);
-  
-  // If URL too long even after minimizing, split further
-  if(callUrl.length > 1800 && minRows.length > 1){
-    // Send one row at a time
-    var i = 0;
-    function sendOne(){
-      if(i >= minRows.length){ onDone(true); return; }
-      var singleEncoded = encodeURIComponent(JSON.stringify([minRows[i]]));
-      var singleUrl = url + '?action=w&s=' + encodeURIComponent(sheetName) +
-                      '&d=' + singleEncoded + '&r=' + (i===0&&replace?1:0);
-      i++;
-      jsonpCall(singleUrl, function(res, err){
-        if(err) console.warn('row send err:', err);
-        setTimeout(sendOne, 200);
-      });
-    }
-    sendOne();
-    return;
-  }
-  
-  jsonpCall(callUrl, function(res, err){
-    if(err) console.warn('chunk err:', err);
-    onDone(!err);
+// POST a single chunk of rows — no-cors, JSON body
+function postChunk(url,sheetName,rows,replace,done){
+  fetch(url,{
+    method:'POST',
+    mode:'no-cors',
+    headers:{'Content-Type':'text/plain'}, // text/plain avoids preflight on mobile
+    body:JSON.stringify({action:'syncSheet',sheet:sheetName,data:rows,replace:replace})
+  }).then(function(){done(true);}).catch(function(e){
+    console.warn('postChunk error:',e);
+    done(false);
   });
 }
 
-// Sync one full sheet
-function syncSheet(url, sheetName, rows, onDone){
-  if(!rows || !rows.length){ onDone(true); return; }
-  var CHUNK = 3; // 3 rows per request — safe for ALL mobile browsers
-  var chunks = [];
-  for(var i=0; i<rows.length; i+=CHUNK) chunks.push(rows.slice(i, i+CHUNK));
-  var ci = 0;
+// Send one full sheet in small chunks of 5 rows
+function syncSheet(url,sheetName,rows,onDone){
+  if(!rows||!rows.length){onDone(true);return;}
+  var CHUNK=5;
+  var chunks=[];
+  for(var i=0;i<rows.length;i+=CHUNK)chunks.push(rows.slice(i,i+CHUNK));
+  var ci=0;
   function next(){
-    if(ci >= chunks.length){ onDone(true); return; }
-    sendChunkJSONP(url, sheetName, chunks[ci], ci===0, function(ok){
+    if(ci>=chunks.length){onDone(true);return;}
+    var replace=(ci===0)?1:0;
+    postChunk(url,sheetName,chunks[ci],replace,function(ok){
+      if(!ok){onDone(false);return;}
       ci++;
-      setTimeout(next, 250);
+      setTimeout(next,300); // small delay between chunks to avoid rate limiting
     });
   }
   next();
 }
 
 async function syncAllData(){
-  var url = LS.get('sheetUrl') || BB_SHEET_URL;
-  if(!url){ toast('⚠ No Apps Script URL'); return; }
-  showSyncStatus('⬆ Syncing to Google Sheets…', 'loading');
-  var sheets = {
+  var url=LS.get('sheetUrl')||BB_SHEET_URL;
+  if(!url){toast('⚠ No Apps Script URL');return;}
+  showSyncStatus('⬆ Syncing to Google Sheets…','loading');
+  var sheets={
     Entries:    LS.get('entries')   ||[],
     Staff:      LS.get('staff')     ||[],
     Salons:     LS.get('salons')    ||[],
@@ -1497,114 +1445,212 @@ async function syncAllData(){
     MgrCashIn:   LS.get('mgrCashIn') ||[],
     MgrExpenses: LS.get('mgrExpenses')||[],
     Deductions:(function(){
-      var res=[];try{Object.keys(localStorage).forEach(function(k){
-        if(k.startsWith('bb_ded_')){var p=k.replace('bb_ded_','').split('_'),sid=p[0],mo=p.slice(1).join('_');
-          (JSON.parse(localStorage.getItem(k))||[]).forEach(function(d){res.push({staffId:sid,month:mo,desc:d.desc,amount:d.amount});});}
-      });}catch(e){}return res;
+      var r=[];try{Object.keys(localStorage).forEach(function(k){
+        if(k.startsWith('bb_ded_')){
+          var p=k.replace('bb_ded_','').split('_'),sid=p[0],mo=p.slice(1).join('_');
+          (JSON.parse(localStorage.getItem(k))||[]).forEach(function(d){r.push({staffId:sid,month:mo,desc:d.desc,amount:d.amount});});
+        }
+      });}catch(e){}return r;
     })(),
     AttOverrides:(function(){
-      var res=[];try{Object.keys(localStorage).forEach(function(k){
-        if(k.startsWith('bb_att_')){var p=k.replace('bb_att_','').split('_'),sid=p[0],mo=p.slice(1).join('_');
+      var r=[];try{Object.keys(localStorage).forEach(function(k){
+        if(k.startsWith('bb_att_')){
+          var p=k.replace('bb_att_','').split('_'),sid=p[0],mo=p.slice(1).join('_');
           var v=JSON.parse(localStorage.getItem(k))||{};
-          res.push({staffId:sid,month:mo,present:v.present||0,half:v.half||0,absent:v.absent||0});}
-      });}catch(e){}return res;
+          r.push({staffId:sid,month:mo,present:v.present||0,half:v.half||0,absent:v.absent||0});
+        }
+      });}catch(e){}return r;
     })()
   };
-  var names = Object.keys(sheets), done = 0, errors = 0;
+  var names=Object.keys(sheets),done=0,errors=0;
   function next(){
-    if(done >= names.length){
-      if(errors === 0){
-        showSyncStatus('✅ All data synced to Google Sheets!', 'ok');
+    if(done>=names.length){
+      if(errors===0){
+        showSyncStatus('✅ All data synced!','ok');
         toast('✅ Synced to Sheets');
-        var el = document.getElementById('lastSyncTime');
-        if(el) el.textContent = 'Synced ' + new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
-      } else {
-        showSyncStatus('⚠ Sync done (some warnings) — check Sheets', 'ok');
-        toast('✅ Sync complete');
+        var el=document.getElementById('lastSyncTime');
+        if(el)el.textContent='Synced '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+      }else{
+        showSyncStatus('⚠ Some sheets may have failed — retry','err');
       }
       return;
     }
-    var name = names[done], rows = sheets[name]; done++;
-    if(!rows.length){ next(); return; }
-    showSyncStatus('⬆ Syncing ' + name + '… (' + done + '/' + names.length + ')', 'loading');
-    syncSheet(url, name, rows, function(ok){ if(!ok) errors++; next(); });
+    var name=names[done],rows=sheets[name];done++;
+    if(!rows.length){next();return;}
+    showSyncStatus('⬆ Syncing '+name+'… ('+done+'/'+names.length+')','loading');
+    syncSheet(url,name,rows,function(ok){if(!ok)errors++;next();});
   }
   next();
 }
 
-async function restoreFromSheets(){
-  var url = LS.get('sheetUrl') || BB_SHEET_URL;
-  if(!url){ toast('⚠ No Apps Script URL'); return; }
-  if(!confirm('Replace ALL local data with data from Google Sheets?')) return;
-  showSyncStatus('⬇ Loading from Google Sheets…', 'loading');
-  jsonpCall(url + '?action=read', function(json, err){
-    if(err){
-      showSyncStatus('❌ Could not reach Google Sheets (' + err + ')', 'err');
-      toast('❌ Restore failed — ' + err);
-      return;
-    }
-    try{
-      if(!json || !json.ok || !json.data) throw new Error(json&&json.error ? json.error : 'No data returned');
-      var d = json.data;
-      if(d.entries    &&d.entries.length)    LS.set('entries',d.entries);
-      if(d.staff      &&d.staff.length)      LS.set('staff',d.staff);
-      if(d.salons     &&d.salons.length)     LS.set('salons',d.salons);
-      if(d.customers  &&d.customers.length)  LS.set('customers',d.customers);
-      if(d.cashIn     &&d.cashIn.length)     LS.set('cashIn',d.cashIn);
-      if(d.expenses   &&d.expenses.length)   LS.set('expenses',d.expenses);
-      if(d.attendance &&d.attendance.length) LS.set('attendance',d.attendance);
-      if(d.styleCards &&d.styleCards.length) LS.set('styleCards',d.styleCards);
-      if(d.visits     &&d.visits.length)     LS.set('visits',d.visits);
-      if(d.advances   &&d.advances.length)   LS.set('advances',d.advances);
-      if(d.mgrCashIn  &&d.mgrCashIn.length)  LS.set('mgrCashIn',d.mgrCashIn);
-      if(d.mgrExpenses&&d.mgrExpenses.length) LS.set('mgrExpenses',d.mgrExpenses);
-      if(d.deductions &&d.deductions.length){
-        var dg={};
-        d.deductions.forEach(function(r){var k='ded_'+r.staffId+'_'+r.month;if(!dg[k])dg[k]=[];dg[k].push({desc:r.desc,amount:r.amount});});
-        Object.keys(dg).forEach(function(k){LS.set(k,dg[k]);});
-      }
-      if(d.attOverrides&&d.attOverrides.length){
-        d.attOverrides.forEach(function(r){LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});});
-      }
-      showSyncStatus('✅ Data restored!', 'ok');
-      toast('✅ Restored — reloading…');
-      setTimeout(function(){ location.reload(); }, 1500);
-    }catch(e){
-      showSyncStatus('❌ Restore failed: ' + e.message, 'err');
-      toast('❌ ' + e.message);
-    }
-  });
+function applyRestoredData(d){
+  if(d.entries    &&d.entries.length)    LS.set('entries',    d.entries);
+  if(d.staff      &&d.staff.length)      LS.set('staff',      d.staff);
+  if(d.salons     &&d.salons.length)     LS.set('salons',     d.salons);
+  if(d.customers  &&d.customers.length)  LS.set('customers',  d.customers);
+  if(d.cashIn     &&d.cashIn.length)     LS.set('cashIn',     d.cashIn);
+  if(d.expenses   &&d.expenses.length)   LS.set('expenses',   d.expenses);
+  if(d.attendance &&d.attendance.length) LS.set('attendance', d.attendance);
+  if(d.styleCards &&d.styleCards.length) LS.set('styleCards', d.styleCards);
+  if(d.visits     &&d.visits.length)     LS.set('visits',     d.visits);
+  if(d.advances   &&d.advances.length)   LS.set('advances',   d.advances);
+  if(d.mgrCashIn  &&d.mgrCashIn.length)  LS.set('mgrCashIn',  d.mgrCashIn);
+  if(d.mgrExpenses&&d.mgrExpenses.length) LS.set('mgrExpenses',d.mgrExpenses);
+  if(d.deductions&&d.deductions.length){
+    var dg={};
+    d.deductions.forEach(function(r){
+      var k='ded_'+r.staffId+'_'+r.month;
+      if(!dg[k])dg[k]=[];
+      dg[k].push({desc:r.desc,amount:r.amount});
+    });
+    Object.keys(dg).forEach(function(k){LS.set(k,dg[k]);});
+  }
+  if(d.attOverrides&&d.attOverrides.length){
+    d.attOverrides.forEach(function(r){
+      LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});
+    });
+  }
 }
 
-// ── AUTO-SYNC every 5 minutes ──
-var autoSyncInterval = null;
+// Core JSONP fetch — works on ALL browsers including mobile
+// Google Apps Script responds with: callback({ok:true,data:{...}})
+function fetchFromSheets(url, onSuccess, onError){
+  var cbName='_bbFetch'+Date.now();
+  var script=document.createElement('script');
+  var done=false;
+  var timer=setTimeout(function(){
+    if(done)return; done=true;
+    delete window[cbName];
+    if(script.parentNode)document.head.removeChild(script);
+    onError('timeout after 25 seconds — check your internet');
+  }, 25000);
+  window[cbName]=function(json){
+    if(done)return; done=true;
+    clearTimeout(timer);
+    delete window[cbName];
+    if(script.parentNode)document.head.removeChild(script);
+    if(json&&json.ok&&json.data) onSuccess(json.data);
+    else onError(json&&json.error?json.error:'No data returned from Sheets');
+  };
+  script.onerror=function(){
+    if(done)return; done=true;
+    clearTimeout(timer);
+    delete window[cbName];
+    if(script.parentNode)document.head.removeChild(script);
+    onError('Could not reach Google Sheets — check internet connection');
+  };
+  // Add a cache-buster so mobile browsers don't serve a cached (possibly empty) response
+  script.src=url+'?action=read&callback='+cbName+'&_='+Date.now();
+  document.head.appendChild(script);
+}
+
+// ── SHARED: apply restored data to localStorage ──
+function applySheetData(d){
+  if(d.entries    &&d.entries.length)    LS.set('entries',d.entries);
+  if(d.staff      &&d.staff.length)      LS.set('staff',d.staff);
+  if(d.salons     &&d.salons.length)     LS.set('salons',d.salons);
+  if(d.customers  &&d.customers.length)  LS.set('customers',d.customers);
+  if(d.cashIn     &&d.cashIn.length)     LS.set('cashIn',d.cashIn);
+  if(d.expenses   &&d.expenses.length)   LS.set('expenses',d.expenses);
+  if(d.attendance &&d.attendance.length) LS.set('attendance',d.attendance);
+  if(d.styleCards &&d.styleCards.length) LS.set('styleCards',d.styleCards);
+  if(d.visits     &&d.visits.length)     LS.set('visits',d.visits);
+  if(d.advances   &&d.advances.length)   LS.set('advances',d.advances);
+  if(d.mgrCashIn  &&d.mgrCashIn.length)  LS.set('mgrCashIn',d.mgrCashIn);
+  if(d.mgrExpenses&&d.mgrExpenses.length) LS.set('mgrExpenses',d.mgrExpenses);
+  if(d.deductions&&d.deductions.length){
+    var dg={};
+    d.deductions.forEach(function(r){
+      var k='ded_'+r.staffId+'_'+r.month;
+      if(!dg[k])dg[k]=[];
+      dg[k].push({desc:r.desc,amount:r.amount});
+    });
+    Object.keys(dg).forEach(function(k){LS.set(k,dg[k]);});
+  }
+  if(d.attOverrides&&d.attOverrides.length){
+    d.attOverrides.forEach(function(r){
+      LS.set('att_'+r.staffId+'_'+r.month,{present:r.present,half:r.half,absent:r.absent});
+    });
+  }
+}
+
+// ── JSONP fetch from Sheets (works on all devices) ──
+function fetchFromSheets(url, onSuccess, onFail, timeoutMs){
+  timeoutMs = timeoutMs || 20000;
+  var cbName='_bbFetch'+Date.now(), done=false;
+  var script=document.createElement('script');
+  var timer=setTimeout(function(){
+    if(done)return; done=true;
+    delete window[cbName];
+    if(script.parentNode)document.head.removeChild(script);
+    if(onFail)onFail('timeout');
+  }, timeoutMs);
+  window[cbName]=function(json){
+    if(done)return; done=true;
+    clearTimeout(timer);
+    delete window[cbName];
+    if(script.parentNode)document.head.removeChild(script);
+    if(json&&json.ok&&json.data) onSuccess(json.data);
+    else if(onFail)onFail(json&&json.error?json.error:'no data');
+  };
+  script.onerror=function(){
+    if(done)return; done=true;
+    clearTimeout(timer);
+    delete window[cbName];
+    if(onFail)onFail('network error');
+  };
+  // Add timestamp to bypass cache
+  script.src=url+'?action=read&callback='+cbName+'&t='+Date.now();
+  document.head.appendChild(script);
+}
+
+async function restoreFromSheets(){
+  var url=BB_SHEET_URL||LS.get('sheetUrl')||localStorage.getItem('bb_sheetUrl');
+  if(!url){toast('⚠ No Apps Script URL configured');return;}
+  if(!confirm('Replace ALL local data with data from Google Sheets?'))return;
+  showSyncStatus('⬇ Loading from Google Sheets…','loading');
+  fetchFromSheets(url, function(d){
+    applySheetData(d);
+    showSyncStatus('✅ Data restored successfully!','ok');
+    toast('✅ Restored — reloading…');
+    setTimeout(function(){location.reload();},1500);
+  }, function(err){
+    showSyncStatus('❌ Restore failed: '+err+' — check internet & URL','err');
+    toast('❌ Restore failed: '+err);
+  }, 25000);
+}
+
+
+
+// ── AUTO-SYNC every 5 minutes (silent) ──
+var autoSyncInterval=null;
 function startAutoSync(){
-  if(autoSyncInterval) clearInterval(autoSyncInterval);
-  var url = LS.get('sheetUrl') || BB_SHEET_URL;
-  if(!url) return;
-  autoSyncInterval = setInterval(function(){ silentSync(); }, 5*60*1000);
+  if(autoSyncInterval)clearInterval(autoSyncInterval);
+  var url=LS.get('sheetUrl')||BB_SHEET_URL;
+  if(!url)return;
+  autoSyncInterval=setInterval(function(){silentSync();},2*60*1000);
 }
 function silentSync(){
-  var url = LS.get('sheetUrl') || BB_SHEET_URL;
-  if(!url) return;
-  var core = {
-    Entries:   LS.get('entries')   ||[],
-    Staff:     LS.get('staff')     ||[],
-    Customers: LS.get('customers') ||[],
-    CashIn:    LS.get('cashIn')    ||[],
-    Expenses:  LS.get('expenses')  ||[],
-    Attendance:LS.get('attendance')||[]
+  var url=LS.get('sheetUrl')||BB_SHEET_URL;
+  if(!url)return;
+  var core={
+    Entries:    LS.get('entries')   ||[],
+    Staff:      LS.get('staff')     ||[],
+    Customers:  LS.get('customers') ||[],
+    CashIn:     LS.get('cashIn')    ||[],
+    Expenses:   LS.get('expenses')  ||[],
+    Attendance: LS.get('attendance')||[]
   };
-  var names = Object.keys(core), i = 0;
+  var names=Object.keys(core),i=0;
   function nxt(){
-    if(i >= names.length){
+    if(i>=names.length){
       var el=document.getElementById('lastSyncTime');
-      if(el) el.textContent='Synced '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+      if(el)el.textContent='Synced '+new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
       return;
     }
-    var name=names[i],rows=core[name]; i++;
+    var name=names[i],rows=core[name];i++;
     if(!rows.length){nxt();return;}
-    syncSheet(url, name, rows, function(){ nxt(); });
+    syncSheet(url,name,rows,function(){nxt();});
   }
   nxt();
 }
